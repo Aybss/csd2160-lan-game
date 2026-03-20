@@ -120,10 +120,8 @@ void GameClient::generateSkinTextures()
     for(int s=0;s<SKIN_COUNT;s++)
     {
         //  Body texture 
-        if (!m_skinBodyRT[s].resize({ TW, TH })) {
-            std::cerr << "[Client] Failed to resize body texture for skin " << s << "\n";
-            continue;
-        }        m_skinBodyRT[s].clear(sf::Color::Transparent);
+        if (!m_skinBodyRT[s].resize({ TW, TH })) continue;
+        m_skinBodyRT[s].clear(sf::Color::Transparent);
 
         sf::Color base = SKIN_COLORS[s];
         sf::Color dark(
@@ -245,10 +243,8 @@ void GameClient::generateSkinTextures()
         m_skinBodyTex[s] = m_skinBodyRT[s].getTexture();
 
         //  Turret texture 
-        if (!m_skinBodyRT[s].resize({ BW, BH })) {
-            std::cerr << "[Client] Failed to resize body texture for skin " << s << "\n";
-            continue;
-        }        m_skinTurretRT[s].clear(sf::Color::Transparent);
+        if (!m_skinTurretRT[s].resize({ BW, BH })) continue;
+        m_skinTurretRT[s].clear(sf::Color::Transparent);
 
         sf::RectangleShape barrel({(float)BW,(float)BH});
         barrel.setFillColor(dark);
@@ -1363,28 +1359,27 @@ void GameClient::drawExplosions(sf::RenderWindow& w)
 
 void GameClient::drawHUD(sf::RenderWindow& w)
 {
-    if(!m_fontLoaded) return;
-    // Kill scoreboard top-left
-    float y=10.f;
-    for(int i=0;i<MAX_PLAYERS;i++){
-        if(!m_lobby.slots[i].active) continue;
+    if (!m_fontLoaded) return;
+
+    float y = 10.f;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (!m_lobby.slots[i].active) continue;
+
         auto& ps = m_gameState.players[i];
-        std::string s = std::string(m_lobby.slots[i].name) + "  K:" + std::to_string(ps.kills);
-        sf::Color c = ps.alive ? skinColor(ps.skin) : sf::Color(100,100,100);
-        if(!ps.alive) s += " [DEAD]";
-        auto t = makeText(s,18,c);
-        t.setPosition({10.f,y}); w.draw(t);
-        y+=22.f;
-    }
-    // Round wins top-right
-    y=10.f;
-    for(int i=0;i<MAX_PLAYERS;i++){
-        if(!m_lobby.slots[i].active) continue;
-        std::string s = std::string(m_lobby.slots[i].name)+": "+std::to_string(m_roundWins[i])+" wins";
-        auto t=makeText(s,16,sf::Color::White);
-        auto b=t.getLocalBounds();
-        t.setPosition({WIN_W-b.size.x-10.f,y}); w.draw(t);
-        y+=20.f;
+
+        // Combined string: Name | K: 0 | W: 0
+        std::string s = std::string(m_lobby.slots[i].name) +
+            "  K:" + std::to_string(ps.kills) +
+            "  W:" + std::to_string(m_roundWins[i]);
+
+        sf::Color c = ps.alive ? skinColor(ps.skin) : sf::Color(100, 100, 100);
+        if (!ps.alive) s += " [DEAD]";
+
+        auto t = makeText(s, 16, c);
+        t.setPosition({ 10.f, y });
+        w.draw(t);
+
+        y += 20.f;
     }
 }
 
@@ -1519,6 +1514,7 @@ void GameClient::drawInGame(sf::RenderWindow& w)
     }
 
     drawHUD(w);
+    drawMinimap(w);
     drawChat(w);
 
     if (m_fontLoaded)
@@ -1532,6 +1528,55 @@ void GameClient::drawInGame(sf::RenderWindow& w)
         auto h = makeText(hint + (talking ? "  [MIC ON]" : ""), 14, hcol);
         h.setPosition({ 10.f, (float)WIN_H - 18.f });
         w.draw(h);
+    }
+}
+
+void GameClient::drawMinimap(sf::RenderWindow& w)
+{
+    const float MM_SIZE = 180.f;
+    const float MM_X = (float)WIN_W - MM_SIZE - 20.f;
+    const float MM_Y = 20.f;
+
+    // Calculate scale to fit the larger dimension
+    float scale = MM_SIZE / (float)std::max(MAP_W, MAP_H);
+    float mmW = (float)MAP_W * scale;
+    float mmH = (float)MAP_H * scale;
+
+    // 1. Background
+    sf::RectangleShape bg({ mmW, mmH });
+    bg.setPosition({ MM_X, MM_Y });
+    bg.setFillColor(sf::Color(0, 0, 0, 150));
+    bg.setOutlineThickness(1.5f);
+    bg.setOutlineColor(sf::Color(150, 150, 150));
+    w.draw(bg);
+
+    // 2. Obstacles (Simplified)
+    for (auto& o : m_obstacles) {
+        sf::RectangleShape os({ o.w * scale, o.h * scale });
+        os.setPosition({ MM_X + o.x * scale, MM_Y + o.y * scale });
+        os.setFillColor(sf::Color(70, 70, 70));
+        w.draw(os);
+    }
+
+    // 3. Players
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (!m_lobby.slots[i].active) continue;
+        auto& ps = m_gameState.players[i];
+        if (!ps.alive) continue;
+
+        sf::CircleShape dot(2.5f);
+        dot.setOrigin({ 2.5f, 2.5f });
+        dot.setPosition({ MM_X + ps.x * scale, MM_Y + ps.y * scale });
+
+        if (i == m_pid) {
+            dot.setFillColor(sf::Color::Cyan); // Local player
+            dot.setOutlineThickness(1.f);
+            dot.setOutlineColor(sf::Color::White);
+        }
+        else {
+            dot.setFillColor(skinColor(m_lobby.slots[i].skin));
+        }
+        w.draw(dot);
     }
 }
 

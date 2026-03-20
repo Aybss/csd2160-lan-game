@@ -116,6 +116,7 @@ private:
     void drawBarrel    (sf::RenderWindow& w, const BarrelState& bs);
     void drawExplosions(sf::RenderWindow& w);
     void drawHUD       (sf::RenderWindow& w);
+    void drawMinimap   (sf::RenderWindow& w);
     void drawChat      (sf::RenderWindow& w);
     void drawObstacles (sf::RenderWindow& w);
 
