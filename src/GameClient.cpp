@@ -332,121 +332,91 @@ void GameClient::generateObstacles(uint32_t seed)
 
 void GameClient::run()
 {
-    sf::RenderWindow window(
-        sf::VideoMode({(unsigned)WIN_W,(unsigned)WIN_H}),
-        "TankNet - " + m_username
-    );
+    sf::RenderWindow window(sf::VideoMode({ (unsigned)WIN_W,(unsigned)WIN_H }), "TankNet - " + m_username);
     window.setFramerateLimit(60);
     sf::Clock clock;
 
-    // Send initial connect
     PktConnect conn; strncpy(conn.name, m_username.c_str(), 15);
     m_net.send(&conn, sizeof(conn));
 
-    while(window.isOpen())
+    while (window.isOpen())
     {
-        // Events
-        while(const auto ev = window.pollEvent())
+        while (const auto ev = window.pollEvent())
         {
-            if(ev->is<sf::Event::Closed>()) window.close();
-
-            if(const auto* kp = ev->getIf<sf::Event::KeyPressed>())
+            if (ev->is<sf::Event::Closed>()) window.close();
+            if (const auto* kp = ev->getIf<sf::Event::KeyPressed>())
             {
-                // Esc: toggle pause menu (lobby + in-game), or close chat, or exit disconnect screen
-                if(kp->code == sf::Keyboard::Key::Escape)
+                if (kp->code == sf::Keyboard::Key::Escape)
                 {
-                    if(m_phase == ClientPhase::DISCONNECTED)
-                        window.close();
-                    else if(m_chatActive)
-                    { m_chatActive=false; m_chatInput.clear(); }
-                    else if(m_phase==ClientPhase::LOBBY || m_phase==ClientPhase::IN_GAME
-                         || m_phase==ClientPhase::ROUND_OVER)
+                    if (m_phase == ClientPhase::DISCONNECTED) window.close();
+                    else if (m_chatActive) { m_chatActive = false; m_chatInput.clear(); }
+                    else if (m_phase == ClientPhase::LOBBY || m_phase == ClientPhase::IN_GAME || m_phase == ClientPhase::ROUND_OVER)
                         m_pauseOpen = !m_pauseOpen;
                 }
-            }
-
-            if(!m_pauseOpen &&
-               (m_phase==ClientPhase::LOBBY || m_phase==ClientPhase::IN_GAME))
-            {
-                if(const auto* kp = ev->getIf<sf::Event::KeyPressed>())
-                {
-                    if(kp->code == sf::Keyboard::Key::Enter && m_phase==ClientPhase::LOBBY)
-                    {
-                        if(m_chatActive) {
-                            if(!m_chatInput.empty()){
-                                PktChat c; c.pid=m_pid;
-                                strncpy(c.msg,m_chatInput.c_str(),MAX_CHAT_MSG-1);
-                                m_net.send(&c,sizeof(c));
-                                m_chatInput.clear();
-                            }
-                            m_chatActive=false;
-                        } else m_chatActive=true;
-                    }
-                    if(kp->code == sf::Keyboard::Key::Backspace && m_chatActive && !m_chatInput.empty())
-                        m_chatInput.pop_back();
-                }
-                if(m_chatActive)
-                    if(const auto* te = ev->getIf<sf::Event::TextEntered>())
-                    {
-                        char c = (char)te->unicode;
-                        if(c>=32 && c<127 && m_chatInput.size()<MAX_CHAT_MSG-1)
-                            m_chatInput += c;
-                    }
             }
         }
 
         m_dt = clock.restart().asSeconds();
         m_dt = std::min(m_dt, 0.05f);
 
+        if (m_phase == ClientPhase::IN_GAME && !m_playingKillCam)
+        {
+            Snapshot sn;
+            for (int i = 0; i < MAX_PLAYERS; i++) {
+                sn.x[i] = m_gameState.players[i].x;
+                sn.y[i] = m_gameState.players[i].y;
+                sn.angle[i] = m_gameState.players[i].angle;
+                sn.alive[i] = m_gameState.players[i].alive;
+            }
+            m_killCamBuffer.push_back(sn);
+            if (m_killCamBuffer.size() > 180) m_killCamBuffer.erase(m_killCamBuffer.begin());
+        }
+
+        if (m_playingKillCam)
+        {
+            m_killCamTimer += m_dt;
+            if (m_killCamTimer > 4.0f) {
+                m_playingKillCam = false;
+                m_killCamTimer = 0.f;
+                m_killCamBuffer.clear();
+            }
+        }
+
         m_net.poll();
         processPackets();
 
-        // Keepalive ping so server doesn't time us out when window is unfocused
         m_keepaliveTimer += m_dt;
-        if(m_keepaliveTimer >= 5.f)
+        if (m_keepaliveTimer >= 5.f)
         {
             m_keepaliveTimer = 0.f;
-            if(m_phase != ClientPhase::CONNECTING && m_phase != ClientPhase::DISCONNECTED)
+            if (m_phase != ClientPhase::CONNECTING && m_phase != ClientPhase::DISCONNECTED)
             {
                 uint8_t ping[2] = { (uint8_t)PktType::PING, m_pid };
                 m_net.send(ping, 2);
             }
         }
 
-        // Voice chat runs in all phases
         m_voice.setTalking(!m_pauseOpen && sf::Keyboard::isKeyPressed(sf::Keyboard::Key::V));
         m_voice.tick();
 
-        // Retry connect
-        if(m_phase==ClientPhase::CONNECTING)
+        window.clear(sf::Color(15, 15, 25));
+        switch (m_phase)
         {
-            m_keepaliveTimer += m_dt;  // reuse timer for retry spacing
-            if(m_keepaliveTimer>1.5f){
-                PktConnect conn2; strncpy(conn2.name,m_username.c_str(),15);
-                m_net.send(&conn2,sizeof(conn2));
-                m_keepaliveTimer=0.f;
-            }
+        case ClientPhase::CONNECTING:   drawConnecting(window);  break;
+        case ClientPhase::LOBBY:        updateLobby(window); drawLobby(window); break;
+        case ClientPhase::SHOP:         updateShop(window);  drawShop(window);  break;
+        case ClientPhase::IN_GAME:      if (!m_pauseOpen) sendInput(window); drawInGame(window); break;
+        case ClientPhase::ROUND_OVER:   drawRoundOver(window); break;
+        case ClientPhase::MATCH_OVER:   drawMatchOver(window);  break;
+        case ClientPhase::DISCONNECTED: drawDisconnected(window); break;
         }
-
-        window.clear(sf::Color(15,15,25));
-        switch(m_phase)
-        {
-            case ClientPhase::CONNECTING:   drawConnecting(window);  break;
-            case ClientPhase::LOBBY:        updateLobby(window); drawLobby(window); break;
-            case ClientPhase::SHOP:         updateShop(window);  drawShop(window);  break;
-            case ClientPhase::IN_GAME:      if(!m_pauseOpen) sendInput(window); drawInGame(window); break;
-            case ClientPhase::ROUND_OVER:   drawRoundOver(window); break;
-            case ClientPhase::MATCH_OVER:   drawMatchOver(window);  break;
-            case ClientPhase::DISCONNECTED: drawDisconnected(window); break;
-        }
-        if(m_pauseOpen) drawPauseMenu(window);
+        if (m_pauseOpen) drawPauseMenu(window);
         window.display();
     }
 
-    PktDisconnect d; d.pid=m_pid;
-    m_net.send(&d,sizeof(d));
+    PktDisconnect d; d.pid = m_pid;
+    m_net.send(&d, sizeof(d));
 }
-
 
 // Packet processing
 
@@ -526,10 +496,21 @@ void GameClient::processPackets()
                 break;
 
             case PktType::ROUND_OVER:
-                if(e.len>=(int)sizeof(PktRoundOver)){
-                    PktRoundOver ro; memcpy(&ro,e.buf,sizeof(ro));
-                    for(int i=0;i<MAX_PLAYERS;i++) m_roundWins[i]=ro.roundWins[i];
-                    m_phase=ClientPhase::ROUND_OVER;
+                if (e.len >= (int)sizeof(PktRoundOver)) {
+                    PktRoundOver ro; memcpy(&ro, e.buf, sizeof(ro));
+                    for (int i = 0;i < MAX_PLAYERS;i++) m_roundWins[i] = ro.roundWins[i];
+
+                    if (!m_killCamBuffer.empty()) {
+                        m_playingKillCam = true;
+                        m_killCamTimer = 0.f;
+                        for (int i = 0; i < MAX_PLAYERS; i++) {
+                            if (m_killCamBuffer.back().alive[i]) {
+                                m_killCamWinnerPid = i;
+                                break;
+                            }
+                        }
+                    }
+                    m_phase = ClientPhase::ROUND_OVER;
                 } break;
 
             case PktType::MATCH_OVER:
@@ -1408,65 +1389,85 @@ void GameClient::drawInGame(sf::RenderWindow& w)
     bool localAlive = (m_pid < MAX_PLAYERS) && m_gameState.players[m_pid].alive;
     uint8_t target = localAlive ? m_pid : m_spectateTarget;
 
-    if (target != 0xFF && target < MAX_PLAYERS && m_gameState.players[target].alive)
+    if (m_playingKillCam && !m_killCamBuffer.empty())
     {
-        auto& ps = m_gameState.players[target];
-        float camX = ps.x;
-        float camY = ps.y;
+        // 1. REPLAY RENDERING
+        float playbackTime = m_killCamTimer * PLAYBACK_SPEED;
+        float progress = std::min(1.0f, playbackTime / 3.0f);
+        size_t frameIdx = (size_t)(progress * (m_killCamBuffer.size() - 1));
+        Snapshot& sn = m_killCamBuffer[frameIdx];
 
-        const float ZOOM = 0.55f;
-        const float halfW = WIN_W * 0.5f * ZOOM;
-        const float halfH = WIN_H * 0.5f * ZOOM;
+        float camX = (m_killCamWinnerPid != -1) ? sn.x[m_killCamWinnerPid] : (float)MAP_W * 0.5f;
+        float camY = (m_killCamWinnerPid != -1) ? sn.y[m_killCamWinnerPid] : (float)MAP_H * 0.5f;
 
-        camX = std::max(halfW, std::min((float)MAP_W - halfW, camX));
-        camY = std::max(halfH, std::min((float)MAP_H - halfH, camY));
-
-        sf::View gameView(sf::Vector2f(camX, camY), sf::Vector2f((float)WIN_W * ZOOM, (float)WIN_H * ZOOM));
-        w.setView(gameView);
+        sf::View replayView(sf::Vector2f(camX, camY), sf::Vector2f(WIN_W * 0.50f, WIN_H * 0.50f));
+        w.setView(replayView);
 
         drawBackground(w);
         drawObstacles(w);
-        for (int i = 0; i < MAX_BARRELS; i++)    drawBarrel(w, m_gameState.barrels[i]);
-        for (auto& p : m_gameState.powerups) drawPowerup(w, p);
-        for (int i = 0; i < MAX_PLAYERS; i++)    drawTank(w, m_gameState.players[i], (uint8_t)i);
-        for (auto& b : m_gameState.bullets)  drawBullet(w, b);
-        drawExplosions(w);
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            if (!sn.alive[i] || !m_lobby.slots[i].active) continue;
+            PlayerState tempPs;
+            tempPs.x = sn.x[i]; tempPs.y = sn.y[i]; tempPs.angle = sn.angle[i];
+            tempPs.alive = sn.alive[i]; tempPs.hp = 3; tempPs.skin = m_lobby.slots[i].skin;
+            drawTank(w, tempPs, (uint8_t)i);
+        }
         drawBorder(w);
-
-        w.setView(w.getDefaultView());
     }
     else
     {
-        const float MARGIN = 40.f;
-        const float availW = WIN_W - MARGIN * 2.f;
-        const float availH = WIN_H - MARGIN * 2.f;
+        // 2. LIVE RENDERING
+        if (target != 0xFF && target < MAX_PLAYERS && m_gameState.players[target].alive)
+        {
+            auto& ps = m_gameState.players[target];
+            float camX = ps.x, camY = ps.y;
+            const float ZOOM = 0.55f;
+            const float halfW = WIN_W * 0.5f * ZOOM, halfH = WIN_H * 0.5f * ZOOM;
+            camX = std::max(halfW, std::min((float)MAP_W - halfW, camX));
+            camY = std::max(halfH, std::min((float)MAP_H - halfH, camY));
 
-        float scaleToFit = std::min(availW / MAP_W, availH / MAP_H);
-        float viewW = WIN_W / scaleToFit;
-        float viewH = WIN_H / scaleToFit;
+            sf::View gameView(sf::Vector2f(camX, camY), sf::Vector2f((float)WIN_W * ZOOM, (float)WIN_H * ZOOM));
+            w.setView(gameView);
 
-        sf::View spectView(sf::Vector2f((float)MAP_W * 0.5f, (float)MAP_H * 0.5f), sf::Vector2f(viewW, viewH));
-        w.setView(spectView);
-
-        drawBackground(w);
-        drawObstacles(w);
-        for (int i = 0; i < MAX_BARRELS; i++)    drawBarrel(w, m_gameState.barrels[i]);
-        for (auto& p : m_gameState.powerups) drawPowerup(w, p);
-        for (int i = 0; i < MAX_PLAYERS; i++)    drawTank(w, m_gameState.players[i], (uint8_t)i);
-        for (auto& b : m_gameState.bullets)  drawBullet(w, b);
-        drawExplosions(w);
-        drawBorder(w);
-
-        w.setView(w.getDefaultView());
-        drawScreenBorder(w, MARGIN);
+            drawBackground(w);
+            drawObstacles(w);
+            for (int i = 0; i < MAX_BARRELS; i++)    drawBarrel(w, m_gameState.barrels[i]);
+            for (auto& p : m_gameState.powerups) drawPowerup(w, p);
+            for (int i = 0; i < MAX_PLAYERS; i++)    drawTank(w, m_gameState.players[i], (uint8_t)i);
+            for (auto& b : m_gameState.bullets)  drawBullet(w, b);
+            drawExplosions(w);
+            drawBorder(w);
+        }
+        else
+        {
+            const float MARGIN = 40.f;
+            const float scaleToFit = std::min((WIN_W - MARGIN * 2.f) / MAP_W, (WIN_H - MARGIN * 2.f) / MAP_H);
+            sf::View spectView(sf::Vector2f((float)MAP_W * 0.5f, (float)MAP_H * 0.5f), sf::Vector2f(WIN_W / scaleToFit, WIN_H / scaleToFit));
+            w.setView(spectView);
+            drawBackground(w);
+            drawObstacles(w);
+            for (int i = 0; i < MAX_BARRELS; i++)    drawBarrel(w, m_gameState.barrels[i]);
+            for (auto& p : m_gameState.powerups) drawPowerup(w, p);
+            for (int i = 0; i < MAX_PLAYERS; i++)    drawTank(w, m_gameState.players[i], (uint8_t)i);
+            for (auto& b : m_gameState.bullets)  drawBullet(w, b);
+            drawExplosions(w);
+            drawBorder(w);
+            w.setView(w.getDefaultView());
+            drawScreenBorder(w, MARGIN);
+        }
     }
 
-    // --- UI Overlays (Drawn in Screen Space) ---
-    if (!localAlive && m_fontLoaded)
+    // 3. UI OVERLAYS (SCREEN SPACE)
+    w.setView(w.getDefaultView());
+    drawHUD(w);
+    drawMinimap(w);
+    drawChat(w);
+
+    // RESTORE SPECTATOR UI
+    if (!localAlive && m_fontLoaded && !m_playingKillCam)
     {
         const float MARGIN = 40.f;
         const float BANNER_H = 44.f;
-
         sf::RectangleShape banner({ WIN_W - MARGIN * 2.f, BANNER_H });
         banner.setPosition({ MARGIN, MARGIN });
         banner.setFillColor(sf::Color(0, 0, 0, 140));
@@ -1484,7 +1485,6 @@ void GameClient::drawInGame(sf::RenderWindow& w)
         spec.setPosition({ WIN_W * 0.5f - sb.size.x * 0.5f - (float)sb.position.x, MARGIN + 26.f });
         w.draw(spec);
 
-        // Define shared UI constants to match sendInput logic
         const float btnY = 47.f, btnW = 30.f, btnH = 30.f;
         const float lX = (float)WIN_W * 0.5f - 165.f;
         const float rX = (float)WIN_W * 0.5f + 135.f;
@@ -1492,42 +1492,31 @@ void GameClient::drawInGame(sf::RenderWindow& w)
         auto drawBtn = [&](float x, float y, const std::string& txt) {
             sf::RectangleShape b({ btnW, btnH });
             b.setPosition({ x, y });
-
             auto mp = sf::Mouse::getPosition(w);
             bool hov = (mp.x >= x && mp.x <= x + btnW && mp.y >= y && mp.y <= y + btnH);
-
             b.setFillColor(hov ? sf::Color(100, 100, 100) : sf::Color(50, 50, 50));
             b.setOutlineThickness(1.f);
             b.setOutlineColor(sf::Color::White);
             w.draw(b);
-
             auto t = makeText(txt, 18);
             auto tb = t.getLocalBounds();
             t.setPosition({ x + (btnW / 2.f) - tb.size.x * 0.5f - (float)tb.position.x,
                             y + (btnH / 2.f) - tb.size.y * 0.5f - (float)tb.position.y });
             w.draw(t);
             };
-
-        // Render buttons at the calculated coordinates
         drawBtn(lX, btnY, "<");
         drawBtn(rX, btnY, ">");
     }
 
-    drawHUD(w);
-    drawMinimap(w);
-    drawChat(w);
-
-    if (m_fontLoaded)
-    {
-        bool talking = m_voice.isTalking();
-        sf::Color hcol = talking ? sf::Color(100, 255, 100) : sf::Color(80, 80, 80);
-        std::string hint = localAlive
-            ? "WASD=Move  Space=Fire  Enter=Chat  Esc=Menu  V=Voice"
-            : "Click Arrows to Cycle  Esc=Menu  V=Voice  (Spectating)";
-
-        auto h = makeText(hint + (talking ? "  [MIC ON]" : ""), 14, hcol);
-        h.setPosition({ 10.f, (float)WIN_H - 18.f });
-        w.draw(h);
+    if (m_playingKillCam) {
+        bool showText = ((int)(m_killCamTimer * 4) % 2 == 0) || (m_killCamTimer * PLAYBACK_SPEED >= 3.0f);
+        if (showText) {
+            auto replayTag = makeText("SLOW-MO REPLAY", 32, sf::Color::Red);
+            replayTag.setStyle(sf::Text::Bold);
+            auto rb = replayTag.getLocalBounds();
+            replayTag.setPosition({ WIN_W / 2.f - rb.size.x / 2.f, 60.f });
+            w.draw(replayTag);
+        }
     }
 }
 

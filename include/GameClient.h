@@ -124,6 +124,22 @@ private:
     void loadAssets();
     void generateSkinTextures();
 
+    struct Snapshot {
+        float x[MAX_PLAYERS];
+        float y[MAX_PLAYERS];
+        float angle[MAX_PLAYERS];
+        bool alive[MAX_PLAYERS];
+    };
+    std::vector<Snapshot> m_killCamBuffer;
+    bool m_playingKillCam = false;
+    float m_killCamTimer = 0.f;
+    int m_killCamWinnerPid = -1;
+
+    // Control settings
+    const float REPLAY_DURATION = 5.0f; // Total time for the sequence
+    const float PLAYBACK_SPEED = 0.5f;   // 0.5 = Half speed (Slow motion)
+    const float POST_REPLAY_PAUSE = 10.5f; // Extra time to freeze on the final frame
+
     sf::Color   skinColor(uint8_t skin) const;
     sf::Color   powerupColor(PowerupType t) const;
     std::string powerupName(PowerupType t) const;
