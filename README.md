@@ -24,15 +24,9 @@ cd C:\vcpkg
 .\vcpkg integrate install
 ```
 
-## 2 – Install SFML
+## 2 – Build
 
-```powershell
-C:\vcpkg\vcpkg install sfml:x64-windows
-```
-
----
-
-## 3 – Build
+SFML is declared in `vcpkg.json` and downloaded automatically — no manual `vcpkg install` needed.
 
 ```powershell
 cd TankNet
