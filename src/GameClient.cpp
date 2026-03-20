@@ -10,7 +10,7 @@
 
 static constexpr float DEG2RAD = 3.14159265f / 180.f;
 
-// ── Skin base colours (used as fallback and for HUD tints) ──────────────────
+//  Skin base colours (used as fallback and for HUD tints) 
 static const sf::Color SKIN_COLORS[SKIN_COUNT] = {
     sf::Color(80,160,80),     // 0 Army
     sf::Color(110,90,60),     // 1 Camo
@@ -119,7 +119,7 @@ void GameClient::generateSkinTextures()
 
     for(int s=0;s<SKIN_COUNT;s++)
     {
-        // ── Body texture ──────────────────────────────────────────────────
+        //  Body texture 
         m_skinBodyRT[s].resize({TW,TH});
         m_skinBodyRT[s].clear(sf::Color::Transparent);
 
@@ -242,7 +242,7 @@ void GameClient::generateSkinTextures()
         m_skinBodyRT[s].display();
         m_skinBodyTex[s] = m_skinBodyRT[s].getTexture();
 
-        // ── Turret texture ────────────────────────────────────────────────
+        //  Turret texture 
         m_skinTurretRT[s].resize({BW,BH});
         m_skinTurretRT[s].clear(sf::Color::Transparent);
 
@@ -668,7 +668,7 @@ void GameClient::drawLobby(sf::RenderWindow& w)
     if(!m_fontLoaded) return;
 
     // Title
-    // ── 3D camo title ─────────────────────────────────────────────────────
+    //  3D camo title 
     {
         const std::string titleStr = "TANK NET";
         const unsigned fontSize = 52;
@@ -929,7 +929,7 @@ void GameClient::drawObstacles(sf::RenderWindow& w)
 
         if(sz > 80.f)
         {
-            // ── Boulder ───────────────────────────────────────────────────
+            //  Boulder 
             // Base dark grey fill
             sf::RectangleShape base({o.w,o.h});
             base.setPosition({o.x,o.y});
@@ -979,7 +979,7 @@ void GameClient::drawObstacles(sf::RenderWindow& w)
         }
         else if(sz > 50.f)
         {
-            // ── Stone wall ────────────────────────────────────────────────
+            //  Stone wall 
             sf::RectangleShape wall({o.w,o.h});
             wall.setPosition({o.x,o.y});
             wall.setFillColor(sf::Color(100,92,80));
@@ -1014,7 +1014,7 @@ void GameClient::drawObstacles(sf::RenderWindow& w)
         }
         else
         {
-            // ── Tree / bush ───────────────────────────────────────────────
+            //  Tree / bush 
             // Brown trunk
             float trunkW = o.w*0.25f;
             float trunkH = o.h*0.4f;
@@ -1059,7 +1059,7 @@ void GameClient::drawTank(sf::RenderWindow& w, const PlayerState& ps, uint8_t pi
 
     if(m_texturesGenerated)
     {
-        // ── Textured body ─────────────────────────────────────────────────
+        //  Textured body 
         sf::Sprite body(m_skinBodyTex[skin]);
         auto tb = m_skinBodyTex[skin].getSize();
         body.setOrigin({tb.x/2.f, tb.y/2.f});
@@ -1070,7 +1070,7 @@ void GameClient::drawTank(sf::RenderWindow& w, const PlayerState& ps, uint8_t pi
         body.setScale({scaleX, scaleY});
         w.draw(body);
 
-        // ── Barrel(s): double barrel for rapid-fire buff ───────────────────
+        //  Barrel(s): double barrel for rapid-fire buff 
         uint8_t buffsEarly = (pid < MAX_PLAYERS) ? m_gameState.buffs[pid] : 0;
         bool rapidFire = (buffsEarly & 0x02) != 0;
 
@@ -1393,7 +1393,7 @@ void GameClient::drawInGame(sf::RenderWindow& w)
 
     if(localAlive)
     {
-        // ── Follow-cam: centered on our tank, zoomed in ────────────────────
+        //  Follow-cam: centered on our tank, zoomed in 
         auto& ps  = m_gameState.players[m_pid];
         float camX = ps.x;
         float camY = ps.y;
@@ -1421,7 +1421,7 @@ void GameClient::drawInGame(sf::RenderWindow& w)
     }
     else
     {
-        // ── Spectator view: full map visible, bordered like before ─────────
+        //  Spectator view: full map visible, bordered like before 
         // Fit the whole map inside the window with a fixed margin for the border
         const float MARGIN  = 40.f;   // screen-space margin on each side
         const float availW  = WIN_W - MARGIN * 2.f;
@@ -1527,7 +1527,7 @@ void GameClient::drawMatchOver(sf::RenderWindow& w)
     wt.setPosition({WIN_W/2.f-wb.size.x/2.f,96.f});
     w.draw(wt);
 
-    // ── Per-player stats table ─────────────────────────────────────────────
+    //  Per-player stats table 
     float y=150.f;
     auto sh=makeText("Player            Kills    XP Earned   Coins Earned",20,sf::Color(160,170,180));
     sh.setPosition({80.f,y}); w.draw(sh); y+=4.f;
@@ -1564,7 +1564,7 @@ void GameClient::drawMatchOver(sf::RenderWindow& w)
         y+=26.f;
     }
 
-    // ── My updated totals (from latest PROFILE_UPDATE) ─────────────────────
+    //  My updated totals (from latest PROFILE_UPDATE) 
     y+=6.f;
     sf::RectangleShape sep2({860.f,1.f}); sep2.setFillColor(sf::Color(60,70,90));
     sep2.setPosition({80.f,y}); w.draw(sep2); y+=10.f;
@@ -1574,7 +1574,7 @@ void GameClient::drawMatchOver(sf::RenderWindow& w)
     auto tot=makeText(totBuf,18,sf::Color::Yellow);
     tot.setPosition({80.f,y}); w.draw(tot); y+=30.f;
 
-    // ── Leaderboard ────────────────────────────────────────────────────────
+    //  Leaderboard 
     y+=8.f;
     auto lbh=makeText("Global Leaderboard  (Top 5 by Wins)",20,sf::Color(230,180,40));
     lbh.setPosition({80.f,y}); w.draw(lbh); y+=28.f;
@@ -1590,7 +1590,7 @@ void GameClient::drawMatchOver(sf::RenderWindow& w)
         y+=22.f;
     }
 
-    // ── Footer hint ───────────────────────────────────────────────────────
+    //  Footer hint 
     bool talking = m_voice.isTalking();
     std::string endHint = "[Esc] Menu    [V] Voice";
     if(talking) endHint += "  [MIC ON]";
@@ -1642,7 +1642,7 @@ void GameClient::drawPauseMenu(sf::RenderWindow& w)
     auto mp = sf::Mouse::getPosition(w);
     bool lmbDown = sf::Mouse::isButtonPressed(sf::Mouse::Button::Left);
 
-    // ── Generic slider helper ──────────────────────────────────────────────
+    //  Generic slider helper 
     //  returns true if the value changed this frame
     auto drawSlider = [&](const std::string& label, float sY,
                           float& value, sf::Color fillCol) -> bool
@@ -1692,7 +1692,7 @@ void GameClient::drawPauseMenu(sf::RenderWindow& w)
         return changed;
     };
 
-    // ── Music / SFX volume ────────────────────────────────────────────────
+    //  Music / SFX volume 
     if(drawSlider("Music & SFX Volume", CY+72.f, m_volume, sf::Color(0,200,140)))
     {
         if(m_audioOk) m_bgm.setVolume(m_volume*0.35f);
@@ -1702,7 +1702,7 @@ void GameClient::drawPauseMenu(sf::RenderWindow& w)
         if(m_sndPowerup) m_sndPowerup->setVolume(m_volume);
     }
 
-    // ── Voice chat volume ─────────────────────────────────────────────────
+    //  Voice chat volume 
     if(drawSlider("Voice Chat Volume", CY+154.f, m_voiceVolume, sf::Color(80,180,255)))
     {
         // VoicePlayer doesn't expose a volume API directly, but we can scale
@@ -1718,7 +1718,7 @@ void GameClient::drawPauseMenu(sf::RenderWindow& w)
     div2.setPosition({CX+30.f, CY+238.f});
     w.draw(div2);
 
-    // ── Button helper (edge-triggered via static tracker) ─────────────────
+    //  Button helper (edge-triggered via static tracker) 
     auto drawBtn = [&](float y, const std::string& lbl,
                        sf::Color normCol, sf::Color hovCol,
                        bool& wasHov) -> bool

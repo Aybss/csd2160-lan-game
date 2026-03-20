@@ -35,7 +35,7 @@ private:
     std::array<LobbyPlayer, MAX_PLAYERS> m_lobby{};
     uint8_t m_hostPid = 0xFF;   // 0xFF = no host yet
 
-    // ── Bot AI state ──────────────────────────────────────────────────────
+    //  Bot AI state 
     struct BotState {
         bool    active    = false;
         float   thinkTimer = 0.f;   // seconds until next decision

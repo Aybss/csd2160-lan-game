@@ -86,7 +86,7 @@ void GameServer::run()
     }
 }
 
-// ── Packet dispatch ───────────────────────────────────────────────────────────
+//  Packet dispatch 
 void GameServer::handlePacket(const Envelope& e)
 {
     if(e.len < 1) return;
@@ -228,7 +228,7 @@ void GameServer::handleDisconnect(uint8_t pid)
     std::cout<<"[Server] pid "<<(int)pid<<" disconnected\n";
 }
 
-// ── Lobby ─────────────────────────────────────────────────────────────────────
+//  Lobby 
 void GameServer::broadcastLobbyState()
 {
     PktLobbyState ls;
@@ -251,10 +251,15 @@ void GameServer::broadcastLobbyState()
 
 bool GameServer::allReady() const
 {
-    int cnt=0;
-    for(int i=0;i<MAX_PLAYERS;i++)
-        if(m_lobby[i].active){ if(!m_lobby[i].ready) return false; cnt++; }
-    return cnt>=MIN_PLAYERS;
+    int cnt = 0;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (m_lobby[i].active) {
+            // A bot is logically always ready, regardless of the stored flag
+            if (!m_lobby[i].isBot && !m_lobby[i].ready) return false;
+            cnt++;
+        }
+    }
+    return cnt >= MIN_PLAYERS;
 }
 
 void GameServer::startGame()
@@ -267,7 +272,7 @@ void GameServer::startGame()
     std::cout<<"[Server] Game started! Seed="<<m_mapSeed<<"\n";
 }
 
-// ── Game ──────────────────────────────────────────────────────────────────────
+//  Game 
 void GameServer::generateMap(uint32_t seed)
 {
     m_obstacles.clear();
@@ -549,7 +554,7 @@ void GameServer::endMatch(uint8_t winner)
     std::cout<<"[Server] Match over. Winner: pid "<<(int)winner<<"\n";
 
     // Stay in MATCH_OVER; run() loop will return to lobby after delay
-    m_roundTimer = ROUND_DELAY * 3.f;
+    m_roundTimer = ROUND_DELAY * 1.1f;
 }
 
 void GameServer::broadcastGameState()
@@ -734,7 +739,7 @@ void GameServer::announcePresence(const sockaddr_in* replyTo)
     }
 }
 
-// ── Host promotion ──────────────────────────────────────────────────────────
+//  Host promotion 
 void GameServer::promoteNextHost()
 {
     m_hostPid = 0xFF;
@@ -749,7 +754,7 @@ void GameServer::promoteNextHost()
     std::cout<<"[Server] No players left; no host.\n";
 }
 
-// ── Add bot ──────────────────────────────────────────────────────────────────
+//  Add bot 
 void GameServer::handleAddBot(const PktAddBot& p)
 {
     // Only the current host/admin may add bots, and only in lobby
@@ -789,84 +794,79 @@ void GameServer::handleAddBot(const PktAddBot& p)
     broadcastLobbyState();
 }
 
-// ── Bot AI ───────────────────────────────────────────────────────────────────
+//  Bot AI 
 // Simple seek-and-shoot FSM: find nearest living enemy, turn toward them, shoot.
 void GameServer::updateBots(float dt)
 {
-    if(m_phase != ServerPhase::IN_GAME) return;
+    if (m_phase != ServerPhase::IN_GAME) return;
 
-    for(int i=0;i<MAX_PLAYERS;i++)
-    {
-        if(!m_bots[i].active) continue;
-        if(!m_lobby[i].active || !m_tanks[i].alive()) continue;
+    // Helper to check collision since Tank::collides is private
+    auto checkWall = [&](float nx, float ny) {
+        if (nx - TANK_RADIUS<0 || ny - TANK_RADIUS<0 || nx + TANK_RADIUS>MAP_W || ny + TANK_RADIUS>MAP_H)
+            return true;
+        for (auto& o : m_obstacles) {
+            float cx = std::max(o.x, std::min(nx, o.x + o.w));
+            float cy = std::max(o.y, std::min(ny, o.y + o.h));
+            float dx = nx - cx, dy = ny - cy;
+            if (dx * dx + dy * dy < TANK_RADIUS * TANK_RADIUS) return true;
+        }
+        return false;
+        };
+
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (!m_bots[i].active || !m_tanks[i].alive()) continue;
 
         auto& bot = m_bots[i];
         auto& tank = m_tanks[i];
-        auto& inp  = m_inputs[i];
 
-        // Re-pick target every ~0.6 seconds or if current target is dead
+        // --- Target Selection Logic ---
         bot.thinkTimer -= dt;
-        bool retarget = bot.thinkTimer <= 0.f;
-        if(bot.targetPid < MAX_PLAYERS &&
-           (!m_lobby[bot.targetPid].active || !m_tanks[bot.targetPid].alive()))
-            retarget = true;
-
-        if(retarget)
-        {
-            bot.thinkTimer = 0.4f + (float)(rand()%4)*0.1f;  // 0.4–0.7s
+        if (bot.thinkTimer <= 0.f || bot.targetPid == 0xFF || !m_tanks[bot.targetPid].alive()) {
+            bot.thinkTimer = 0.5f + (rand() % 5) * 0.1f;
             float bestDist = 1e9f;
-            bot.targetPid  = 0xFF;
-            for(int j=0;j<MAX_PLAYERS;j++)
-            {
-                if(j==i) continue;
-                if(!m_lobby[j].active || !m_tanks[j].alive()) continue;
-                if(m_lobby[j].isBot) continue;   // don't target other bots
-                float dx = m_tanks[j].x()-tank.x();
-                float dy = m_tanks[j].y()-tank.y();
-                float d  = dx*dx+dy*dy;
-                if(d<bestDist){ bestDist=d; bot.targetPid=(uint8_t)j; }
+            bot.targetPid = 0xFF;
+            for (int j = 0; j < MAX_PLAYERS; j++) {
+                if (j == i || !m_lobby[j].active || !m_tanks[j].alive()) continue;
+                float d = std::pow(m_tanks[j].x() - tank.x(), 2) + std::pow(m_tanks[j].y() - tank.y(), 2);
+                if (d < bestDist) { bestDist = d; bot.targetPid = (uint8_t)j; }
             }
         }
 
-        // Clear inputs each tick
-        inp = PktInput{};
-        inp.pid = (uint8_t)i;
-        inp.seq++;
+        // --- Steering & Movement ---
+        m_inputs[i] = PktInput{}; // Reset
+        m_inputs[i].pid = (uint8_t)i;
+        if (bot.targetPid == 0xFF) continue;
 
-        if(bot.targetPid == 0xFF) continue;  // no live target
-
-        auto& tgt = m_tanks[bot.targetPid];
-        float dx  = tgt.x() - tank.x();
-        float dy  = tgt.y() - tank.y();
-        float dist = sqrtf(dx*dx+dy*dy);
-
-        // Desired angle toward target
+        float rad = tank.angle() * (3.14159265f / 180.f); // Define rad
+        float dx = m_tanks[bot.targetPid].x() - tank.x();
+        float dy = m_tanks[bot.targetPid].y() - tank.y();
+        float dist = sqrtf(dx * dx + dy * dy);
         float desiredAngle = atan2f(dy, dx) * 180.f / 3.14159265f;
-        float currentAngle = tank.angle();
+        float angleDiff = desiredAngle - tank.angle();
 
-        // Normalize angle difference to [-180, 180]
-        float angleDiff = desiredAngle - currentAngle;
-        while(angleDiff >  180.f) angleDiff -= 360.f;
-        while(angleDiff < -180.f) angleDiff += 360.f;
+        while (angleDiff > 180.f) angleDiff -= 360.f;
+        while (angleDiff < -180.f) angleDiff += 360.f;
 
         // Turn toward target
-        if(angleDiff >  8.f)       inp.right = 1;
-        else if(angleDiff < -8.f)  inp.left  = 1;
+        if (angleDiff > 10.f) m_inputs[i].right = 1;
+        else if (angleDiff < -10.f) m_inputs[i].left = 1;
 
-        // Move: advance if far, back off if too close (avoid running into target)
-        if(dist > 200.f)       inp.forward = 1;
-        else if(dist < 80.f)   inp.back    = 1;
+        // --- Whisker Obstacle Avoidance ---
+        float lookDist = 70.f;
+        float fx = tank.x() + cosf(rad) * lookDist;
+        float fy = tank.y() + sinf(rad) * lookDist;
 
-        // Shoot when roughly aimed and within range
-        if(fabsf(angleDiff) < 20.f && dist < 600.f)
-            inp.fire = 1;
-
-        // Simple obstacle avoidance: if very close to a wall edge, turn
-        if(tank.x() < 80.f || tank.x() > MAP_W-80.f ||
-           tank.y() < 80.f || tank.y() > MAP_H-80.f)
-        {
-            inp.right   = 1;
-            inp.forward = 1;
+        if (checkWall(fx, fy)) {
+            m_inputs[i].forward = 0;
+            m_inputs[i].back = 1; // Back away from wall
+            // Veer away
+            if (angleDiff > 0) m_inputs[i].left = 1; else m_inputs[i].right = 1;
         }
+        else {
+            if (dist > 150.f) m_inputs[i].forward = 1;
+            else if (dist < 100.f) m_inputs[i].back = 1;
+        }
+
+        if (fabsf(angleDiff) < 25.f && dist < 500.f) m_inputs[i].fire = 1;
     }
 }

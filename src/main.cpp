@@ -446,7 +446,7 @@ screenBrowser(sf::RenderWindow& w, const std::string& /*username*/)
             }
         }
 
-        // ── Draw ──────────────────────────────────────────────────────────
+        //  Draw 
         w.clear(BG_DARK);
         drawGrid(w);
 
