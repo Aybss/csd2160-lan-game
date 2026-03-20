@@ -102,3 +102,17 @@ private:
 
     friend class GameClient;  // GameClient sets m_connected/m_pid on ack
 };
+
+// ── LAN discovery ──────────────────────────────────────────────────────────────
+struct DiscoveredServer
+{
+    std::string ip;
+    uint16_t    port        = NET_PORT;
+    uint8_t     playerCount = 0;
+    uint8_t     maxPlayers  = MAX_PLAYERS;
+    bool        inGame      = false;
+    char        playerNames[MAX_PLAYERS][16]{};
+};
+
+// Sends a broadcast query and collects responses for ~waitMs milliseconds
+std::vector<DiscoveredServer> scanLAN(uint16_t port = NET_PORT, int waitMs = 800);

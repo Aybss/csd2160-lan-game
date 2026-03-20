@@ -10,7 +10,7 @@
 
 static constexpr float DEG2RAD = 3.14159265f / 180.f;
 
-//  Skin base colours (used as fallback and for HUD tints) 
+// ── Skin base colours (used as fallback and for HUD tints) ──────────────────
 static const sf::Color SKIN_COLORS[SKIN_COUNT] = {
     sf::Color(80,160,80),     // 0 Army
     sf::Color(110,90,60),     // 1 Camo
@@ -119,7 +119,7 @@ void GameClient::generateSkinTextures()
 
     for(int s=0;s<SKIN_COUNT;s++)
     {
-        //  Body texture 
+        // ── Body texture ──────────────────────────────────────────────────
         m_skinBodyRT[s].resize({TW,TH});
         m_skinBodyRT[s].clear(sf::Color::Transparent);
 
@@ -242,7 +242,7 @@ void GameClient::generateSkinTextures()
         m_skinBodyRT[s].display();
         m_skinBodyTex[s] = m_skinBodyRT[s].getTexture();
 
-        //  Turret texture 
+        // ── Turret texture ────────────────────────────────────────────────
         m_skinTurretRT[s].resize({BW,BH});
         m_skinTurretRT[s].clear(sf::Color::Transparent);
 
@@ -288,9 +288,9 @@ void GameClient::generateObstacles(uint32_t seed)
     }
 }
 
-
+// ════════════════════════════════════════════════════════════════════════════
 // Main loop
-
+// ════════════════════════════════════════════════════════════════════════════
 void GameClient::run()
 {
     sf::RenderWindow window(
@@ -381,9 +381,9 @@ void GameClient::run()
     m_net.send(&d,sizeof(d));
 }
 
-
+// ════════════════════════════════════════════════════════════════════════════
 // Packet processing
-
+// ════════════════════════════════════════════════════════════════════════════
 void GameClient::processPackets()
 {
     Envelope e;
@@ -478,6 +478,13 @@ void GameClient::processPackets()
                     if((int)m_chatHistory.size()>MAX_CHAT_HIST) m_chatHistory.pop_front();
                 } break;
 
+            case PktType::BARREL_EXPLODE:
+                if(e.len>=(int)sizeof(PktBarrelExplode)){
+                    PktBarrelExplode be; memcpy(&be,e.buf,sizeof(be));
+                    m_explosions.push_back({be.x, be.y, EXPLOSION_DURATION, EXPLOSION_DURATION});
+                    if(m_sndDead) m_sndDead->play();  // reuse death sound for explosion
+                } break;
+
             case PktType::VOICE_DATA:
                 if(e.len>=(int)(sizeof(PktType)+sizeof(uint8_t)+sizeof(uint16_t))){
                     uint8_t  vpid = e.buf[1];
@@ -525,9 +532,9 @@ void GameClient::processPackets()
     }
 }
 
-
+// ════════════════════════════════════════════════════════════════════════════
 // Input
-
+// ════════════════════════════════════════════════════════════════════════════
 void GameClient::sendInput(sf::RenderWindow& /*w*/)
 {
     if(m_chatActive) return;
@@ -541,12 +548,19 @@ void GameClient::sendInput(sf::RenderWindow& /*w*/)
     inp.fire    = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Space) ? 1:0;
     m_net.send(&inp,sizeof(inp));
 
-    m_stateAge += m_dt;
+    m_stateAge  += m_dt;
+    m_gameTime  += m_dt;
+    // Tick explosion particles
+    for(auto& e : m_explosions) e.timer -= m_dt;
+    m_explosions.erase(
+        std::remove_if(m_explosions.begin(), m_explosions.end(),
+            [](const Explosion& e){ return e.timer <= 0.f; }),
+        m_explosions.end());
 }
 
-
+// ════════════════════════════════════════════════════════════════════════════
 // Draw helpers
-
+// ════════════════════════════════════════════════════════════════════════════
 void GameClient::drawConnecting(sf::RenderWindow& w)
 {
     if(!m_fontLoaded) return;
@@ -588,9 +602,70 @@ void GameClient::drawLobby(sf::RenderWindow& w)
     if(!m_fontLoaded) return;
 
     // Title
-    auto title = makeText("TANK NET  -  Lobby", 36, sf::Color::Yellow);
-    title.setPosition({WIN_W/2.f-180.f, 20.f});
-    w.draw(title);
+    // ── 3D camo title ─────────────────────────────────────────────────────
+    {
+        const std::string titleStr = "TANK NET";
+        const unsigned fontSize = 52;
+
+        // Shadow layers (offset behind for 3D depth)
+        for(int depth=6; depth>=1; depth--){
+            sf::Text shadow(m_font, titleStr, fontSize);
+            shadow.setStyle(sf::Text::Bold);
+            uint8_t sv = (uint8_t)(20 + depth*8);
+            shadow.setFillColor(sf::Color(sv, sv+4, sv, 255));
+            auto sb = shadow.getLocalBounds();
+            shadow.setOrigin({sb.size.x/2.f, sb.size.y/2.f});
+            shadow.setPosition({WIN_W/2.f + depth*1.5f, 44.f + depth*1.5f});
+            w.draw(shadow);
+        }
+
+        // Camo background behind text (draw into RenderTexture then sprite)
+        // Approximate with coloured rectangles since we cant clip easily
+        auto mainT = makeText(titleStr, fontSize, sf::Color(80,140,70));
+        mainT.setStyle(sf::Text::Bold);
+        auto mb = mainT.getLocalBounds();
+        mainT.setOrigin({mb.size.x/2.f, mb.size.y/2.f});
+        mainT.setPosition({WIN_W/2.f, 44.f});
+
+        // Draw dark camo blobs as background accent (fixed positions, no flickering)
+        static const float blobData[10][4] = {
+            {-200,  8, 14, 0}, {-140, 20, 22, 1}, {-60, 4, 16, 2},
+            {  20, 28, 18, 0}, { 80, 10, 12, 1}, {140, 24, 20, 2},
+            { 200,  6, 16, 0}, {-100, 36, 10, 1}, {60, 38, 14, 2},
+            {160, 34, 20, 0}
+        };
+        static const sf::Color blobCols[3] = {
+            sf::Color(50,90,40,120), sf::Color(40,70,30,110), sf::Color(60,100,45,130)
+        };
+        for(auto& bd : blobData){
+            sf::CircleShape blob(bd[2]);
+            blob.setFillColor(blobCols[(int)bd[3]]);
+            blob.setPosition({WIN_W/2.f + bd[0], 16.f + bd[1]});
+            w.draw(blob);
+        }
+
+        // Main text in camo green
+        w.draw(mainT);
+
+        // Outline pass for crispness
+        for(int ox=-1;ox<=1;ox++) for(int oy=-1;oy<=1;oy++){
+            if(ox==0&&oy==0) continue;
+            sf::Text outline(m_font, titleStr, fontSize);
+            outline.setStyle(sf::Text::Bold);
+            outline.setFillColor(sf::Color(30,50,25,180));
+            outline.setOrigin({mb.size.x/2.f, mb.size.y/2.f});
+            outline.setPosition({WIN_W/2.f+(float)ox, 44.f+(float)oy});
+            w.draw(outline);
+        }
+        w.draw(mainT);
+
+        // "- Lobby" subtitle
+        auto sub = makeText("- Lobby", 20, sf::Color(160,200,140));
+        auto sbb = sub.getLocalBounds();
+        sub.setOrigin({sbb.size.x/2.f, 0.f});
+        sub.setPosition({WIN_W/2.f, 78.f});
+        w.draw(sub);
+    }
 
     // Player list
     for(int i=0;i<MAX_PLAYERS;i++)
@@ -757,14 +832,138 @@ void GameClient::drawShop(sf::RenderWindow& w)
 
 void GameClient::drawObstacles(sf::RenderWindow& w)
 {
+    // Local LCG - deterministic per obstacle without corrupting global rand state
+    auto lcg = [](unsigned& s) -> unsigned {
+        s = s * 1664525u + 1013904223u;
+        return s;
+    };
+
     for(auto& o:m_obstacles)
     {
-        sf::RectangleShape r({o.w,o.h});
-        r.setPosition({o.x,o.y});
-        r.setFillColor(sf::Color(80,60,40));
-        r.setOutlineThickness(2.f);
-        r.setOutlineColor(sf::Color(60,40,20));
-        w.draw(r);
+        float cx = o.x + o.w*0.5f;
+        float cy = o.y + o.h*0.5f;
+        float sz = std::max(o.w, o.h);
+
+        if(sz > 80.f)
+        {
+            // ── Boulder ───────────────────────────────────────────────────
+            // Base dark grey fill
+            sf::RectangleShape base({o.w,o.h});
+            base.setPosition({o.x,o.y});
+            base.setFillColor(sf::Color(70,70,72));
+            base.setOutlineThickness(2.f);
+            base.setOutlineColor(sf::Color(40,40,42));
+            w.draw(base);
+
+            // Irregular blob clusters to fake roundness
+            { unsigned s=(unsigned)(o.x*7+o.y*13);
+            for(int i=0;i<5;i++){
+                float blobR = o.w*0.25f + (float)(lcg(s)%(int)(o.w*0.15f+1));
+                sf::CircleShape blob(blobR);
+                blob.setOrigin({blobR,blobR});
+                blob.setPosition({
+                    o.x + (float)(lcg(s)%(int)(o.w+1)),
+                    o.y + (float)(lcg(s)%(int)(o.h+1))});
+                blob.setFillColor(sf::Color(75+lcg(s)%20, 74+lcg(s)%18, 76+lcg(s)%20));
+                w.draw(blob);
+            }
+
+            // Crack lines
+            for(int i=0;i<3;i++){
+                sf::RectangleShape crack({o.w*0.3f+(float)(lcg(s)%(int)(o.w*0.2f+1)), 2.f});
+                crack.setFillColor(sf::Color(35,33,35,180));
+                crack.setRotation(sf::degrees((float)(lcg(s)%180)));
+                crack.setPosition({cx - o.w*0.1f, cy - o.h*0.1f});
+                w.draw(crack);
+            }}
+
+            // Highlight top-left
+            sf::RectangleShape hl({o.w*0.6f,4.f});
+            hl.setFillColor(sf::Color(120,118,122,100));
+            hl.setPosition({o.x+6.f,o.y+6.f});
+            w.draw(hl);
+
+            // Moss patches (dark green smudges)
+            { unsigned ms=(unsigned)(o.x*3+o.y*17);
+            for(int i=0;i<3;i++){
+                sf::CircleShape moss(6.f+(float)(lcg(ms)%8));
+                moss.setFillColor(sf::Color(45,72,38,140));
+                moss.setPosition({
+                    o.x+(float)(lcg(ms)%(int)(o.w+1)),
+                    o.y+(float)(lcg(ms)%(int)(o.h+1))});
+                w.draw(moss);
+            }}
+        }
+        else if(sz > 50.f)
+        {
+            // ── Stone wall ────────────────────────────────────────────────
+            sf::RectangleShape wall({o.w,o.h});
+            wall.setPosition({o.x,o.y});
+            wall.setFillColor(sf::Color(100,92,80));
+            wall.setOutlineThickness(2.f);
+            wall.setOutlineColor(sf::Color(60,55,48));
+            w.draw(wall);
+
+            // Brick rows
+            int brickH = 14;
+            bool offset = false;
+            for(float by=o.y; by<o.y+o.h; by+=brickH){
+                float brickW = 28.f;
+                float startX = offset ? o.x-brickW*0.5f : o.x;
+                for(float bx=startX; bx<o.x+o.w; bx+=brickW){
+                    sf::RectangleShape brick({brickW-2.f,(float)brickH-2.f});
+                    brick.setPosition({bx+1.f,by+1.f});
+                    { unsigned bs2=(unsigned)(bx*3+by*7);
+                    brick.setFillColor(sf::Color(
+                        95+lcg(bs2)%20, 86+lcg(bs2)%18, 74+lcg(bs2)%16)); }
+                    brick.setOutlineThickness(1.f);
+                    brick.setOutlineColor(sf::Color(55,50,44));
+                    w.draw(brick);
+                }
+                offset = !offset;
+            }
+
+            // Top highlight
+            sf::RectangleShape hl({o.w,3.f});
+            hl.setFillColor(sf::Color(150,140,125,80));
+            hl.setPosition({o.x,o.y});
+            w.draw(hl);
+        }
+        else
+        {
+            // ── Tree / bush ───────────────────────────────────────────────
+            // Brown trunk
+            float trunkW = o.w*0.25f;
+            float trunkH = o.h*0.4f;
+            sf::RectangleShape trunk({trunkW,trunkH});
+            trunk.setOrigin({trunkW*0.5f,0.f});
+            trunk.setPosition({cx, o.y+o.h-trunkH});
+            trunk.setFillColor(sf::Color(90,60,30));
+            w.draw(trunk);
+
+            // Layered foliage circles (dark green)
+            { unsigned ts=(unsigned)(o.x*11+o.y*7);
+            float leafR = o.w*0.5f;
+            for(int layer=0;layer<3;layer++){
+                float lr = leafR*(1.f-layer*0.15f);
+                sf::CircleShape leaf(lr);
+                leaf.setOrigin({lr,lr});
+                leaf.setPosition({
+                    cx+(float)(lcg(ts)%8)-4.f,
+                    o.y+o.h*0.45f-(float)layer*6.f});
+                leaf.setFillColor(sf::Color(
+                    30+lcg(ts)%20,
+                    80+lcg(ts)%40,
+                    25+lcg(ts)%20));
+                w.draw(leaf);
+            }}
+
+            // Highlight dot on top foliage
+            sf::CircleShape shine(4.f);
+            shine.setFillColor(sf::Color(120,200,80,100));
+            shine.setPosition({cx-6.f, o.y+4.f});
+            w.draw(shine);
+        }
     }
 }
 
@@ -777,7 +976,7 @@ void GameClient::drawTank(sf::RenderWindow& w, const PlayerState& ps, uint8_t pi
 
     if(m_texturesGenerated)
     {
-        //  Textured body 
+        // ── Textured body ─────────────────────────────────────────────────
         sf::Sprite body(m_skinBodyTex[skin]);
         auto tb = m_skinBodyTex[skin].getSize();
         body.setOrigin({tb.x/2.f, tb.y/2.f});
@@ -789,7 +988,7 @@ void GameClient::drawTank(sf::RenderWindow& w, const PlayerState& ps, uint8_t pi
         body.setScale({scaleX, scaleY});
         w.draw(body);
 
-        //  Textured barrel 
+        // ── Textured barrel ───────────────────────────────────────────────
         sf::Sprite barrel(m_skinTurretTex[skin]);
         auto tt = m_skinTurretTex[skin].getSize();
         barrel.setOrigin({0.f, tt.y/2.f});
@@ -811,16 +1010,29 @@ void GameClient::drawTank(sf::RenderWindow& w, const PlayerState& ps, uint8_t pi
         w.draw(body);
     }
 
-    // Shield glow ring
+    // Shield: pulsing translucent blue dome
     uint8_t buffs = (pid < MAX_PLAYERS) ? m_gameState.buffs[pid] : 0;
     if(buffs & 0x04){
-        sf::CircleShape shield(TANK_RADIUS+5.f);
-        shield.setOrigin({TANK_RADIUS+5.f,TANK_RADIUS+5.f});
-        shield.setPosition({ps.x,ps.y});
-        shield.setFillColor(sf::Color::Transparent);
-        shield.setOutlineThickness(3.f);
-        shield.setOutlineColor(sf::Color(100,255,100,200));
-        w.draw(shield);
+        float pulse = 0.5f + 0.5f*sinf(m_gameTime * 4.f);  // 0..1 oscillation
+        uint8_t alpha = (uint8_t)(120 + 80*pulse);
+
+        // Filled translucent blue
+        sf::CircleShape dome(TANK_RADIUS+8.f);
+        dome.setOrigin({TANK_RADIUS+8.f,TANK_RADIUS+8.f});
+        dome.setPosition({ps.x,ps.y});
+        dome.setFillColor(sf::Color(60,140,255,(uint8_t)(40+30*pulse)));
+        dome.setOutlineThickness(3.f);
+        dome.setOutlineColor(sf::Color(100,180,255,alpha));
+        w.draw(dome);
+
+        // Inner shimmer ring
+        sf::CircleShape inner(TANK_RADIUS+2.f);
+        inner.setOrigin({TANK_RADIUS+2.f,TANK_RADIUS+2.f});
+        inner.setPosition({ps.x,ps.y});
+        inner.setFillColor(sf::Color::Transparent);
+        inner.setOutlineThickness(2.f);
+        inner.setOutlineColor(sf::Color(180,220,255,(uint8_t)(80+60*pulse)));
+        w.draw(inner);
     }
 
     // HP pips
@@ -900,6 +1112,120 @@ void GameClient::drawPowerup(sf::RenderWindow& w, const PowerupState& ps)
     }
 }
 
+void GameClient::drawBarrel(sf::RenderWindow& w, const BarrelState& bs)
+{
+    if(!bs.active) return;
+    float r = BARREL_RADIUS;
+
+    // Dark shadow
+    sf::CircleShape shadow(r+2.f);
+    shadow.setOrigin({r+2.f,r+2.f});
+    shadow.setPosition({bs.x+3.f,bs.y+3.f});
+    shadow.setFillColor(sf::Color(0,0,0,80));
+    w.draw(shadow);
+
+    // Barrel body (red cylinder)
+    sf::RectangleShape body({r*1.6f, r*2.f});
+    body.setOrigin({r*0.8f,r});
+    body.setPosition({bs.x,bs.y});
+    body.setFillColor(sf::Color(180,40,30));
+    body.setOutlineThickness(2.f);
+    body.setOutlineColor(sf::Color(100,20,15));
+    w.draw(body);
+
+    // Lid top
+    sf::RectangleShape lid({r*1.6f, r*0.28f});
+    lid.setOrigin({r*0.8f, r*0.14f});
+    lid.setPosition({bs.x, bs.y-r+r*0.14f});
+    lid.setFillColor(sf::Color(140,30,22));
+    w.draw(lid);
+
+    // Lid bottom
+    sf::RectangleShape lidB({r*1.6f, r*0.28f});
+    lidB.setOrigin({r*0.8f, r*0.14f});
+    lidB.setPosition({bs.x, bs.y+r-r*0.14f});
+    lidB.setFillColor(sf::Color(140,30,22));
+    w.draw(lidB);
+
+    // Metal band stripes (dark red)
+    for(int i=0;i<2;i++){
+        sf::RectangleShape band({r*1.6f, 4.f});
+        band.setOrigin({r*0.8f,2.f});
+        band.setPosition({bs.x, bs.y - r*0.3f + i*r*0.6f});
+        band.setFillColor(sf::Color(90,18,12));
+        w.draw(band);
+    }
+
+    // Hazard X stripes
+    sf::RectangleShape x1({r*1.4f, 4.f});
+    x1.setOrigin({r*0.7f,2.f});
+    x1.setPosition({bs.x,bs.y});
+    x1.setRotation(sf::degrees(40.f));
+    x1.setFillColor(sf::Color(230,200,0,180));
+    w.draw(x1);
+    x1.setRotation(sf::degrees(-40.f));
+    w.draw(x1);
+
+    // Shine highlight
+    sf::RectangleShape shine({r*0.3f, r*1.2f});
+    shine.setOrigin({r*0.15f,r*0.6f});
+    shine.setPosition({bs.x-r*0.4f,bs.y});
+    shine.setFillColor(sf::Color(255,100,90,80));
+    w.draw(shine);
+}
+
+void GameClient::drawExplosions(sf::RenderWindow& w)
+{
+    for(auto& exp : m_explosions)
+    {
+        float t = 1.f - (exp.timer / exp.maxTimer);  // 0=start, 1=end
+
+        // Outer ring (expands and fades)
+        float outerR = BARREL_EXPLODE_R * t;
+        sf::CircleShape outer(outerR);
+        outer.setOrigin({outerR,outerR});
+        outer.setPosition({exp.x,exp.y});
+        outer.setFillColor(sf::Color::Transparent);
+        outer.setOutlineThickness(4.f*(1.f-t));
+        outer.setOutlineColor(sf::Color(255,100,0,(uint8_t)(180*(1.f-t))));
+        w.draw(outer);
+
+        // Inner fireball (shrinks and fades)
+        float innerR = BARREL_EXPLODE_R * 0.5f * (1.f-t*0.7f);
+        sf::CircleShape inner(innerR);
+        inner.setOrigin({innerR,innerR});
+        inner.setPosition({exp.x,exp.y});
+        inner.setFillColor(sf::Color(
+            255,
+            (uint8_t)(200*(1.f-t)),
+            0,
+            (uint8_t)(220*(1.f-t))));
+        w.draw(inner);
+
+        // Core (bright white-yellow)
+        float coreR = BARREL_EXPLODE_R * 0.2f * (1.f-t);
+        if(coreR > 1.f){
+            sf::CircleShape core(coreR);
+            core.setOrigin({coreR,coreR});
+            core.setPosition({exp.x,exp.y});
+            core.setFillColor(sf::Color(255,240,180,(uint8_t)(255*(1.f-t))));
+            w.draw(core);
+        }
+
+        // Debris particles (8 directions)
+        for(int i=0;i<8;i++){
+            float angle = i * 3.14159f * 0.25f;
+            float dist  = BARREL_EXPLODE_R * 0.7f * t;
+            float px    = exp.x + cosf(angle)*dist;
+            float py    = exp.y + sinf(angle)*dist;
+            sf::CircleShape debris(4.f*(1.f-t)+1.f);
+            debris.setFillColor(sf::Color(200,80,0,(uint8_t)(200*(1.f-t))));
+            debris.setPosition({px,py});
+            w.draw(debris);
+        }
+    }
+}
+
 void GameClient::drawHUD(sf::RenderWindow& w)
 {
     if(!m_fontLoaded) return;
@@ -950,9 +1276,11 @@ void GameClient::drawChat(sf::RenderWindow& w)
 void GameClient::drawInGame(sf::RenderWindow& w)
 {
     drawObstacles(w);
+    for(int i=0;i<MAX_BARRELS;i++)    drawBarrel(w,m_gameState.barrels[i]);
     for(auto& p:m_gameState.powerups) drawPowerup(w,p);
     for(int i=0;i<MAX_PLAYERS;i++)    drawTank(w,m_gameState.players[i],(uint8_t)i);
     for(auto& b:m_gameState.bullets)  drawBullet(w,b);
+    drawExplosions(w);
     drawHUD(w);
     drawChat(w);
 

@@ -3,13 +3,13 @@
 #include <string>
 #include <array>
 
-//  Window 
+// ─── Window ──────────────────────────────────────────────────────────────────
 constexpr int   WIN_W           = 1024;
 constexpr int   WIN_H           = 768;
 constexpr int   MAP_W           = 1024;
 constexpr int   MAP_H           = 768;
 
-//  Gameplay 
+// ─── Gameplay ────────────────────────────────────────────────────────────────
 constexpr int   MAX_PLAYERS     = 6;
 constexpr int   MIN_PLAYERS     = 2;   // min to start
 constexpr float TANK_SPEED      = 160.f;
@@ -27,15 +27,15 @@ constexpr int   COINS_PER_WIN   = 50;
 constexpr int   XP_PER_LEVEL    = 200;
 constexpr uint16_t NET_PORT     = 54100;
 
-//  Skin definitions 
+// ─── Skin definitions ────────────────────────────────────────────────────────
 constexpr int SKIN_COUNT = 6;
 // Prices in coins (index 0 = default, free)
 constexpr int SKIN_PRICES[SKIN_COUNT] = { 0, 40, 80, 120, 160, 200 };
 
-//  Map obstacle
+// ─── Map obstacle
 struct Obstacle { float x, y, w, h; };
 
-//  Powerups 
+// ─── Powerups ────────────────────────────────────────────────────────────────
 constexpr int   MAX_POWERUPS     = 4;
 constexpr float POWERUP_RADIUS   = 14.f;
 constexpr float POWERUP_DURATION = 6.f;   // seconds buff lasts
@@ -47,22 +47,28 @@ enum class PowerupType : uint8_t
     SHIELD     = 2,   // absorbs next hit
 };
 
-//  Voice 
+// ─── Voice ───────────────────────────────────────────────────────────────────
 constexpr int VOICE_FRAME_MS    = 20;    // Opus frame size in ms
 constexpr int VOICE_SAMPLE_RATE = 16000; // 16kHz mono
 constexpr int VOICE_MAX_BYTES   = 400;   // max compressed bytes per frame
 
-//  Chat 
+// ─── Chat ────────────────────────────────────────────────────────────────────
 constexpr int MAX_CHAT_MSG  = 48;
 constexpr int MAX_CHAT_HIST = 12;
 
-//  Obstacle grid 
+// ─── Obstacle grid ───────────────────────────────────────────────────────────
 constexpr int OBS_COLS = 8;
 constexpr int OBS_ROWS = 6;
 
+// ─── Explosive barrels ───────────────────────────────────────────────────────
+constexpr int   MAX_BARRELS        = 6;
+constexpr float BARREL_RADIUS      = 14.f;
+constexpr float BARREL_EXPLODE_R   = 80.f;  // explosion damage radius
+constexpr float EXPLOSION_DURATION = 0.6f;  // client-side visual duration
 
+// ════════════════════════════════════════════════════════════════════════════
 // Packet types
-
+// ════════════════════════════════════════════════════════════════════════════
 enum class PktType : uint8_t
 {
     // Lobby
@@ -94,6 +100,9 @@ enum class PktType : uint8_t
     POWERUP_STATE   = 50,  // server→all: powerup positions/types in game state
     POWERUP_COLLECT = 51,  // server→all: a player collected a powerup
 
+    // Barrels
+    BARREL_EXPLODE  = 55,  // server->all: barrel exploded
+
     // Voice chat
     VOICE_DATA      = 60,  // client→server→others: compressed audio chunk
 
@@ -101,14 +110,18 @@ enum class PktType : uint8_t
     PING            = 40,
     PONG_PKT        = 41,
     ACK             = 42,
+
+    // LAN Discovery
+    SERVER_ANNOUNCE = 70,   // server→broadcast: "I exist"
+    SERVER_QUERY    = 71,   // client→broadcast: "who's there?"
 };
 
-
+// ════════════════════════════════════════════════════════════════════════════
 // Packet structs  (all packed – safe over loopback/LAN)
-
+// ════════════════════════════════════════════════════════════════════════════
 #pragma pack(push,1)
 
-//  Lobby 
+// ── Lobby ────────────────────────────────────────────────────────────────────
 struct PktConnect
 {
     PktType type = PktType::CONNECT;
@@ -160,7 +173,7 @@ struct PktDisconnect
     uint8_t pid  = 0;
 };
 
-//  In-game 
+// ── In-game ──────────────────────────────────────────────────────────────────
 struct PktInput
 {
     PktType  type    = PktType::INPUT;
@@ -192,6 +205,19 @@ struct BulletState
     float    life = BULLET_LIFETIME;
 };
 
+struct BarrelState
+{
+    uint8_t active = 0;
+    float   x = 0, y = 0;
+};
+
+struct PktBarrelExplode
+{
+    PktType type  = PktType::BARREL_EXPLODE;
+    uint8_t idx   = 0;    // which barrel slot
+    float   x = 0, y = 0; // explosion centre
+};
+
 // PowerupState must be declared before PktGameState which embeds it
 struct PowerupState
 {
@@ -209,6 +235,7 @@ struct PktGameState
     PowerupState powerups[MAX_POWERUPS]{};
     // Per-player active buff bitmask: bit0=speed, bit1=rapidfire, bit2=shield
     uint8_t      buffs[MAX_PLAYERS]{};
+    BarrelState  barrels[MAX_BARRELS]{};
 };
 
 struct PktBulletSpawn
@@ -253,7 +280,7 @@ struct PktMatchOver
     uint16_t lbLevel[5]{};
 };
 
-//  Chat 
+// ── Chat ─────────────────────────────────────────────────────────────────────
 struct PktChat
 {
     PktType type = PktType::CHAT;
@@ -261,7 +288,7 @@ struct PktChat
     char    msg[MAX_CHAT_MSG]{};
 };
 
-//  Shop 
+// ── Shop ─────────────────────────────────────────────────────────────────────
 struct PktBuySkin
 {
     PktType type    = PktType::BUY_SKIN;
@@ -287,7 +314,7 @@ struct PktProfileUpdate
     uint16_t totalWins    = 0;
 };
 
-//  Powerups 
+// ── Powerups ─────────────────────────────────────────────────────────────────
 struct PktPowerupCollect
 {
     PktType     type  = PktType::POWERUP_COLLECT;
@@ -296,7 +323,7 @@ struct PktPowerupCollect
     PowerupType ptype = PowerupType::SPEED;
 };
 
-//  Voice 
+// ── Voice ─────────────────────────────────────────────────────────────────────
 struct PktVoiceData
 {
     PktType  type    = PktType::VOICE_DATA;
@@ -305,11 +332,27 @@ struct PktVoiceData
     uint8_t  data[VOICE_MAX_BYTES]{};
 };
 
-//  Utility 
+// ── Utility ──────────────────────────────────────────────────────────────────
 struct PktAck
 {
     PktType  type = PktType::ACK;
     uint32_t seq  = 0;
+};
+
+// ── LAN Discovery ─────────────────────────────────────────────────────────────
+struct PktServerAnnounce
+{
+    PktType  type         = PktType::SERVER_ANNOUNCE;
+    uint16_t port         = NET_PORT;
+    uint8_t  playerCount  = 0;
+    uint8_t  maxPlayers   = MAX_PLAYERS;
+    uint8_t  inGame       = 0;          // 1 if game in progress (not joinable)
+    char     playerNames[MAX_PLAYERS][16]{};  // names of connected players
+};
+
+struct PktServerQuery
+{
+    PktType type = PktType::SERVER_QUERY;
 };
 
 #pragma pack(pop)

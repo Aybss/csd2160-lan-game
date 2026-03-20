@@ -5,6 +5,8 @@
 #include <cstring>
 #include <stdexcept>
 #include <iostream>
+#include <chrono>
+#include <thread>
 
 //  WSA init 
 static bool s_wsaInit = false;
@@ -170,4 +172,81 @@ bool ClientNet::pollEnvelope(Envelope& out)
 {
     if(m_queue.empty()) return false;
     out=m_queue.front(); m_queue.pop(); return true;
+}
+
+// ── LAN discovery ──────────────────────────────────────────────────────────────
+// Discovery protocol:
+//   1. Scanner binds to NET_PORT+1 (dedicated discovery port).
+//   2. Scanner broadcasts PktServerQuery to NET_PORT (game port).
+//   3. Server receives query, unicasts PktServerAnnounce to scanner (NET_PORT+1).
+//   4. Server also periodically broadcasts PktServerAnnounce to NET_PORT+1.
+//   Both paths land on the scanner socket.
+std::vector<DiscoveredServer> scanLAN(uint16_t port, int waitMs)
+{
+    ensureWsa();
+    std::vector<DiscoveredServer> results;
+
+    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if(sock == INVALID_SOCKET) return results;
+
+    int yes = 1;
+    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, (char*)&yes, sizeof(yes));
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (char*)&yes, sizeof(yes));
+    u_long nb = 1;
+    ioctlsocket(sock, FIONBIO, &nb);
+
+    // Bind to dedicated discovery port (NET_PORT+1).
+    // The server unicasts replies here, and also broadcasts to this port periodically.
+    sockaddr_in local{};
+    local.sin_family      = AF_INET;
+    local.sin_port        = htons(port + 1);
+    local.sin_addr.s_addr = INADDR_ANY;
+    if(::bind(sock, (sockaddr*)&local, sizeof(local)) != 0)
+    {
+        // Fallback to ephemeral if port already in use
+        local.sin_port = 0;
+        ::bind(sock, (sockaddr*)&local, sizeof(local));
+    }
+
+    // Broadcast PktServerQuery to the game port so servers respond immediately
+    PktServerQuery q;
+    sockaddr_in bcast{};
+    bcast.sin_family      = AF_INET;
+    bcast.sin_port        = htons(port);          // game port
+    bcast.sin_addr.s_addr = INADDR_BROADCAST;
+    sendto(sock, (const char*)&q, sizeof(q), 0, (sockaddr*)&bcast, sizeof(bcast));
+
+    auto start    = std::chrono::steady_clock::now();
+    auto deadline = std::chrono::milliseconds(waitMs);
+    uint8_t buf[2048];
+
+    while(std::chrono::steady_clock::now() - start < deadline)
+    {
+        sockaddr_in from{}; int fl = sizeof(from);
+        int r = recvfrom(sock, (char*)buf, sizeof(buf), 0, (sockaddr*)&from, &fl);
+        if(r >= (int)sizeof(PktServerAnnounce) &&
+           buf[0] == (uint8_t)PktType::SERVER_ANNOUNCE)
+        {
+            PktServerAnnounce ann;
+            memcpy(&ann, buf, sizeof(ann));
+
+            DiscoveredServer ds;
+            char ipbuf[INET_ADDRSTRLEN]{};
+            inet_ntop(AF_INET, &from.sin_addr, ipbuf, sizeof(ipbuf));
+            ds.ip          = ipbuf;
+            ds.port        = ann.port;
+            ds.playerCount = ann.playerCount;
+            ds.maxPlayers  = ann.maxPlayers;
+            ds.inGame      = ann.inGame != 0;
+            memcpy(ds.playerNames, ann.playerNames, sizeof(ds.playerNames));
+
+            bool dup = false;
+            for(auto& ex : results)
+                if(ex.ip == ds.ip && ex.port == ds.port) { dup = true; break; }
+            if(!dup) results.push_back(ds);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    closesocket(sock);
+    return results;
 }

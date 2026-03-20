@@ -23,6 +23,7 @@ private:
 
     ServerPhase m_phase = ServerPhase::LOBBY;
     float       m_now   = 0.f;
+    float       m_announceTimer = 0.f;  // LAN broadcast timer
 
     struct LobbyPlayer {
         bool    active = false;
@@ -48,7 +49,10 @@ private:
 
     // Powerups
     std::array<PowerupState, MAX_POWERUPS> m_powerups{};
-    std::array<float, MAX_POWERUPS>        m_powerupRespawn{};  // countdown to respawn
+    std::array<float, MAX_POWERUPS>        m_powerupRespawn{};
+
+    // Explosive barrels
+    std::array<BarrelState, MAX_BARRELS>   m_barrels{};
 
     void handlePacket(const Envelope& e);
     void handleConnect(const Envelope& e);
@@ -62,6 +66,7 @@ private:
     void broadcastLobbyState();
     bool allReady() const;
     void startGame();
+    void announcePresence(const sockaddr_in* replyTo = nullptr);  // UDP broadcast/unicast for LAN discovery
 
     void updateGame(float dt);
     void checkBulletCollisions();
@@ -71,6 +76,9 @@ private:
     void endMatch(uint8_t winner);
     void resetRound();
     void spawnPowerups();
+    void spawnBarrels();
+    void checkBarrelCollisions();
+    void explodeBarrel(int idx);
     void generateMap(uint32_t seed);
     void broadcastGameState();
     void sendProfileUpdate(uint8_t pid);

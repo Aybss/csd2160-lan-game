@@ -50,7 +50,7 @@ private:
 
     uint8_t m_roundWins[MAX_PLAYERS]{};
 
-    //  SFML assets 
+    // ── SFML assets ───────────────────────────────────────────────────────
     sf::Font        m_font;
     bool            m_fontLoaded = false;
 
@@ -59,11 +59,20 @@ private:
     sf::Music                    m_bgm;
     bool                         m_audioOk = false;
 
-    //  Voice chat 
+    // ── Voice chat ────────────────────────────────────────────────────────
     VoiceChat m_voice;
     bool      m_voiceInit = false;
 
-    //  Skin textures (procedurally generated at startup) 
+    // ── Explosion particles ───────────────────────────────────────────────
+    struct Explosion {
+        float x, y;       // centre
+        float timer;      // counts down from EXPLOSION_DURATION
+        float maxTimer;
+    };
+    std::vector<Explosion> m_explosions;
+    float m_gameTime = 0.f;  // for shield pulse
+
+    // ── Skin textures (procedurally generated at startup) ─────────────────
     // Each skin has a body texture and a turret texture
     sf::RenderTexture m_skinBodyRT[SKIN_COUNT];
     sf::RenderTexture m_skinTurretRT[SKIN_COUNT];
@@ -89,6 +98,8 @@ private:
     void drawTank      (sf::RenderWindow& w, const PlayerState& ps, uint8_t pid);
     void drawBullet    (sf::RenderWindow& w, const BulletState& bs);
     void drawPowerup   (sf::RenderWindow& w, const PowerupState& ps);
+    void drawBarrel    (sf::RenderWindow& w, const BarrelState& bs);
+    void drawExplosions(sf::RenderWindow& w);
     void drawHUD       (sf::RenderWindow& w);
     void drawChat      (sf::RenderWindow& w);
     void drawObstacles (sf::RenderWindow& w);

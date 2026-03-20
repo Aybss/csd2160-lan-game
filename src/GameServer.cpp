@@ -39,6 +39,10 @@ void GameServer::run()
 
         m_net.poll(m_now);
 
+        // LAN announce (every 1 second)
+        m_announceTimer -= dt;
+        if(m_announceTimer <= 0.f){ announcePresence(nullptr); m_announceTimer = 1.f; }
+
         // Check timeouts
         auto timedOut = m_net.checkTimeouts(m_now);
         for(auto pid : timedOut)
@@ -82,7 +86,7 @@ void GameServer::run()
     }
 }
 
-//  Packet dispatch 
+// ── Packet dispatch ───────────────────────────────────────────────────────────
 void GameServer::handlePacket(const Envelope& e)
 {
     if(e.len < 1) return;
@@ -102,6 +106,7 @@ void GameServer::handlePacket(const Envelope& e)
             PktDisconnect p; memcpy(&p,e.buf,sizeof(p)); handleDisconnect(p.pid); } break;
         case PktType::PING:          { PktType pong=PktType::PONG_PKT; m_net.sendTo(e.buf[1],&pong,1); } break;
         case PktType::VOICE_DATA:    handleVoice(e); break;
+        case PktType::SERVER_QUERY:  announcePresence(&e.from); break;
         default: break;
     }
 }
@@ -212,7 +217,7 @@ void GameServer::handleDisconnect(uint8_t pid)
     std::cout<<"[Server] pid "<<(int)pid<<" disconnected\n";
 }
 
-//  Lobby 
+// ── Lobby ─────────────────────────────────────────────────────────────────────
 void GameServer::broadcastLobbyState()
 {
     PktLobbyState ls;
@@ -253,7 +258,7 @@ void GameServer::startGame()
     std::cout<<"[Server] Game started! Seed="<<m_mapSeed<<"\n";
 }
 
-//  Game 
+// ── Game ──────────────────────────────────────────────────────────────────────
 void GameServer::generateMap(uint32_t seed)
 {
     m_obstacles.clear();
@@ -303,6 +308,7 @@ void GameServer::resetRound()
     for(int i=0;i<MAX_PLAYERS;i++) if(m_lobby[i].active) m_aliveCount++;
 
     spawnPowerups();
+    spawnBarrels();
 
     // Tell all clients to enter IN_GAME
     PktGameStart gs; gs.mapSeed = m_mapSeed;
@@ -391,6 +397,7 @@ void GameServer::updateGame(float dt)
 
     checkBulletCollisions();
     checkPowerupCollisions();
+    checkBarrelCollisions();
 
     // Powerup respawn timers
     for(int i=0;i<MAX_POWERUPS;i++){
@@ -538,8 +545,93 @@ void GameServer::broadcastGameState()
     for(int i=0;i<MAX_POWERUPS;i++) gs.powerups[i] = m_powerups[i];
     // Buff masks
     for(int i=0;i<MAX_PLAYERS;i++)  gs.buffs[i]    = m_tanks[i].buffMask();
+    // Barrels
+    for(int i=0;i<MAX_BARRELS;i++)  gs.barrels[i]  = m_barrels[i];
 
     m_net.broadcast(&gs,sizeof(gs));
+}
+
+void GameServer::spawnBarrels()
+{
+    // Place barrels in open areas around the map - not too close to spawns
+    static const float BX[MAX_BARRELS] = {
+        MAP_W*0.5f,  MAP_W*0.3f,  MAP_W*0.7f,
+        MAP_W*0.5f,  MAP_W*0.2f,  MAP_W*0.8f
+    };
+    static const float BY[MAX_BARRELS] = {
+        MAP_H*0.5f,  MAP_H*0.5f,  MAP_H*0.5f,
+        MAP_H*0.3f,  MAP_H*0.7f,  MAP_H*0.7f
+    };
+    for(int i=0;i<MAX_BARRELS;i++){
+        m_barrels[i].active = 1;
+        // Add small random offset so they don't always sit in same exact spot
+        m_barrels[i].x = BX[i] + (rand()%60-30);
+        m_barrels[i].y = BY[i] + (rand()%60-30);
+    }
+}
+
+void GameServer::checkBarrelCollisions()
+{
+    for(int bi=0;bi<MAX_BARRELS;bi++){
+        if(!m_barrels[bi].active) continue;
+        for(auto& b : m_bullets){
+            if(!b.active()) continue;
+            float dx = b.x()-m_barrels[bi].x;
+            float dy = b.y()-m_barrels[bi].y;
+            float r  = BULLET_RADIUS + BARREL_RADIUS;
+            if(dx*dx+dy*dy < r*r){
+                b.kill();
+                explodeBarrel(bi);
+                break;
+            }
+        }
+    }
+}
+
+void GameServer::explodeBarrel(int idx)
+{
+    if(!m_barrels[idx].active) return;
+    m_barrels[idx].active = 0;
+
+    float ex = m_barrels[idx].x;
+    float ey = m_barrels[idx].y;
+
+    // Broadcast explosion event
+    PktBarrelExplode pkt;
+    pkt.idx = (uint8_t)idx;
+    pkt.x   = ex;
+    pkt.y   = ey;
+    m_net.broadcast(&pkt, sizeof(pkt));
+
+    // Damage all tanks within explosion radius
+    for(int ti=0;ti<MAX_PLAYERS;ti++){
+        if(!m_lobby[ti].active || !m_tanks[ti].alive()) continue;
+        float dx = m_tanks[ti].x()-ex;
+        float dy = m_tanks[ti].y()-ey;
+        if(dx*dx+dy*dy < BARREL_EXPLODE_R*BARREL_EXPLODE_R){
+            m_tanks[ti].takeDamage(2);  // barrels hit hard
+            PktPlayerHit hit;
+            hit.victim=ti; hit.attacker=0xFF; hit.hpLeft=m_tanks[ti].hp();
+            m_net.broadcast(&hit,sizeof(hit));
+            if(!m_tanks[ti].alive()){
+                m_aliveCount--;
+                PktPlayerDead dead; dead.victim=ti; dead.attacker=0xFF;
+                m_net.broadcast(&dead,sizeof(dead));
+            }
+        }
+    }
+
+    // Chain reaction: check if other barrels are within explosion radius
+    for(int bi=0;bi<MAX_BARRELS;bi++){
+        if(bi==idx || !m_barrels[bi].active) continue;
+        float dx = m_barrels[bi].x-ex;
+        float dy = m_barrels[bi].y-ey;
+        if(dx*dx+dy*dy < BARREL_EXPLODE_R*BARREL_EXPLODE_R)
+            explodeBarrel(bi);  // chain!
+    }
+
+    checkRoundEnd();
+    std::cout<<"[Server] Barrel "<<idx<<" exploded at ("<<ex<<","<<ey<<")\n";
 }
 
 void GameServer::sendProfileUpdate(uint8_t pid)
@@ -550,4 +642,59 @@ void GameServer::sendProfileUpdate(uint8_t pid)
     pu.xp=r.xp; pu.level=r.level; pu.coins=r.coins;
     pu.ownedSkins=r.ownedSkins; pu.totalWins=r.totalWins;
     m_net.sendTo(pid,&pu,sizeof(pu));
+}
+
+void GameServer::announcePresence(const sockaddr_in* replyTo)
+{
+    PktServerAnnounce ann;
+    ann.port   = NET_PORT;
+    ann.inGame = (m_phase != ServerPhase::LOBBY) ? 1 : 0;
+    uint8_t cnt = 0;
+    for(int i=0;i<MAX_PLAYERS;i++){
+        if(m_lobby[i].active){
+            strncpy(ann.playerNames[cnt], m_lobby[i].name, 15);
+            ann.playerNames[cnt][15] = '\0';
+            cnt++;
+        }
+    }
+    ann.playerCount = cnt;
+    ann.maxPlayers  = MAX_PLAYERS;
+
+    // Lazy-create a socket bound to NET_PORT+1 (dedicated discovery port).
+    // Scanners also bind to NET_PORT+1 so they receive these broadcasts.
+    static SOCKET bsock = INVALID_SOCKET;
+    if(bsock == INVALID_SOCKET){
+        bsock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        int yes = 1;
+        setsockopt(bsock, SOL_SOCKET, SO_BROADCAST, (char*)&yes, sizeof(yes));
+        setsockopt(bsock, SOL_SOCKET, SO_REUSEADDR, (char*)&yes, sizeof(yes));
+        u_long nb = 1;
+        ioctlsocket(bsock, FIONBIO, &nb);
+        sockaddr_in local{};
+        local.sin_family      = AF_INET;
+        local.sin_port        = htons(NET_PORT + 1);
+        local.sin_addr.s_addr = INADDR_ANY;
+        ::bind(bsock, (sockaddr*)&local, sizeof(local));
+    }
+
+    if(replyTo)
+    {
+        // Direct unicast reply back to whoever queried us, on their source port
+        sendto(bsock, (const char*)&ann, sizeof(ann), 0,
+               (const sockaddr*)replyTo, sizeof(*replyTo));
+    }
+    else
+    {
+        // Periodic broadcast on NET_PORT+1 – scanners bind to this port
+        sockaddr_in dest{};
+        dest.sin_family      = AF_INET;
+        dest.sin_port        = htons(NET_PORT + 1);
+        dest.sin_addr.s_addr = INADDR_BROADCAST;
+        sendto(bsock, (const char*)&ann, sizeof(ann), 0,
+               (sockaddr*)&dest, sizeof(dest));
+        // Also send to loopback so local scanner (Create+Join-self) works
+        dest.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        sendto(bsock, (const char*)&ann, sizeof(ann), 0,
+               (sockaddr*)&dest, sizeof(dest));
+    }
 }
