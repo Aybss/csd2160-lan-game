@@ -613,7 +613,7 @@ int main(int /*argc*/, char* /*argv*/[])
         {
             auto [ip, port] = screenBrowser(window, username);
             if (!window.isOpen()) return 0;
-            if (ip.empty()) continue;   // user backed out → re-show menu
+            if (ip.empty()) continue;   // user backed out - re-show menu
             serverIp   = ip;
             serverPort = port;
             window.close();
@@ -657,6 +657,6 @@ int main(int /*argc*/, char* /*argv*/[])
 
         // Small pause so the old window fully closes before re-opening menu
         std::this_thread::sleep_for(std::chrono::milliseconds(120));
-        // Loop → re-open menu window
+        // Loop - re-open menu window
     }
 }

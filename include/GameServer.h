@@ -73,6 +73,7 @@ private:
     void handleDisconnect(uint8_t pid);
     void handleVoice(const Envelope& e);
     void handleAddBot(const PktAddBot& p);
+    void handleKickBot(const PktKickBot& p);
 
     void promoteNextHost();          // reassign hostPid after host leaves
     void updateBots(float dt);       // simple AI tick

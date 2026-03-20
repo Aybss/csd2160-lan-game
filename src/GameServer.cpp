@@ -109,6 +109,11 @@ void GameServer::handlePacket(const Envelope& e)
         case PktType::SERVER_QUERY:  announcePresence(&e.from); break;
         case PktType::ADD_BOT:       if(e.len>=(int)sizeof(PktAddBot)){
             PktAddBot p; memcpy(&p,e.buf,sizeof(p)); handleAddBot(p); } break;
+        case PktType::KICK_BOT:
+            if (e.len >= (int)sizeof(PktKickBot)) {
+                PktKickBot p; memcpy(&p, e.buf, sizeof(p));
+                handleKickBot(p);
+            } break;
         default: break;
     }
 }
@@ -794,79 +799,130 @@ void GameServer::handleAddBot(const PktAddBot& p)
     broadcastLobbyState();
 }
 
+// kick bot
+void GameServer::handleKickBot(const PktKickBot& p) {
+    if (p.requestPid != m_hostPid || p.botPid >= MAX_PLAYERS) return;
+    if (!m_lobby[p.botPid].isBot || !m_lobby[p.botPid].active) return;
+
+    m_lobby[p.botPid].active = false;
+    m_bots[p.botPid].active = false;
+
+    std::cout << "[Server] Bot " << (int)p.botPid << " was kicked by host.\n";
+    broadcastLobbyState();
+}
+
 //  Bot AI 
-// Simple seek-and-shoot FSM: find nearest living enemy, turn toward them, shoot.
 void GameServer::updateBots(float dt)
 {
     if (m_phase != ServerPhase::IN_GAME) return;
 
-    // Helper to check collision since Tank::collides is private
-    auto checkWall = [&](float nx, float ny) {
-        if (nx - TANK_RADIUS<0 || ny - TANK_RADIUS<0 || nx + TANK_RADIUS>MAP_W || ny + TANK_RADIUS>MAP_H)
-            return true;
+    const int NAV_COLS = 32;
+    const int NAV_ROWS = 24;
+    bool blocked[NAV_ROWS][NAV_COLS] = { false };
+    float cw = (float)MAP_W / NAV_COLS;
+    float ch = (float)MAP_H / NAV_ROWS;
+
+    const float margin = TANK_RADIUS + 5.0f;
+    for (auto& o : m_obstacles) {
+        int c1 = std::clamp((int)((o.x - margin) / cw), 0, NAV_COLS - 1);
+        int r1 = std::clamp((int)((o.y - margin) / ch), 0, NAV_ROWS - 1);
+        int c2 = std::clamp((int)((o.x + o.w + margin) / cw), 0, NAV_COLS - 1);
+        int r2 = std::clamp((int)((o.y + o.h + margin) / ch), 0, NAV_ROWS - 1);
+        for (int r = r1; r <= r2; r++)
+            for (int c = c1; c <= c2; c++)
+                blocked[r][c] = true;
+    }
+
+    auto isSafe = [&](float x, float y) {
+        if (x < margin || x > MAP_W - margin || y < margin || y > MAP_H - margin) return false;
         for (auto& o : m_obstacles) {
-            float cx = std::max(o.x, std::min(nx, o.x + o.w));
-            float cy = std::max(o.y, std::min(ny, o.y + o.h));
-            float dx = nx - cx, dy = ny - cy;
-            if (dx * dx + dy * dy < TANK_RADIUS * TANK_RADIUS) return true;
+            float cx = std::max(o.x, std::min(x, o.x + o.w));
+            float cy = std::max(o.y, std::min(y, o.y + o.h));
+            if (std::pow(x - cx, 2) + std::pow(y - cy, 2) < std::pow(TANK_RADIUS + 2.0f, 2)) return false;
         }
-        return false;
+        return true;
         };
 
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (!m_bots[i].active || !m_tanks[i].alive()) continue;
 
-        auto& bot = m_bots[i];
         auto& tank = m_tanks[i];
+        auto& inp = m_inputs[i];
+        inp = PktInput{}; inp.pid = (uint8_t)i; inp.seq++;
 
-        // --- Target Selection Logic ---
-        bot.thinkTimer -= dt;
-        if (bot.thinkTimer <= 0.f || bot.targetPid == 0xFF || !m_tanks[bot.targetPid].alive()) {
-            bot.thinkTimer = 0.5f + (rand() % 5) * 0.1f;
-            float bestDist = 1e9f;
-            bot.targetPid = 0xFF;
-            for (int j = 0; j < MAX_PLAYERS; j++) {
-                if (j == i || !m_lobby[j].active || !m_tanks[j].alive()) continue;
-                float d = std::pow(m_tanks[j].x() - tank.x(), 2) + std::pow(m_tanks[j].y() - tank.y(), 2);
-                if (d < bestDist) { bestDist = d; bot.targetPid = (uint8_t)j; }
+        // Find nearest human player
+        uint8_t target = 0xFF;
+        float bestD = 1e9f;
+        for (int j = 0; j < MAX_PLAYERS; j++) {
+            if (j == i || !m_lobby[j].active || !m_tanks[j].alive() || m_lobby[j].isBot) continue;
+            float d = std::pow(m_tanks[j].x() - tank.x(), 2) + std::pow(m_tanks[j].y() - tank.y(), 2);
+            if (d < bestD) { bestD = d; target = (uint8_t)j; }
+        }
+        if (target == 0xFF) continue;
+
+        // BFS Pathfinding
+        int startC = std::clamp((int)(tank.x() / cw), 0, NAV_COLS - 1);
+        int startR = std::clamp((int)(tank.y() / ch), 0, NAV_ROWS - 1);
+        int endC = std::clamp((int)(m_tanks[target].x() / cw), 0, NAV_COLS - 1);
+        int endR = std::clamp((int)(m_tanks[target].y() / ch), 0, NAV_ROWS - 1);
+
+        struct Node { int r, c; };
+        Node parent[NAV_ROWS][NAV_COLS];
+        for (int r = 0; r < NAV_ROWS; r++) for (int c = 0; c < NAV_COLS; c++) parent[r][c] = { -1, -1 };
+
+        std::queue<Node> q;
+        q.push({ startR, startC });
+        parent[startR][startC] = { startR, startC };
+
+        bool found = false;
+        while (!q.empty()) {
+            Node curr = q.front(); q.pop();
+            if (curr.r == endR && curr.c == endC) { found = true; break; }
+            int dr[] = { -1, 1, 0, 0 }, dc[] = { 0, 0, -1, 1 };
+            for (int k = 0; k < 4; k++) {
+                int nr = curr.r + dr[k], nc = curr.c + dc[k];
+                if (nr >= 0 && nr < NAV_ROWS && nc >= 0 && nc < NAV_COLS && !blocked[nr][nc] && parent[nr][nc].r == -1) {
+                    parent[nr][nc] = curr;
+                    q.push({ nr, nc });
+                }
             }
         }
 
-        // --- Steering & Movement ---
-        m_inputs[i] = PktInput{}; // Reset
-        m_inputs[i].pid = (uint8_t)i;
-        if (bot.targetPid == 0xFF) continue;
+        // Steering Logic
+        float tx = m_tanks[target].x(), ty = m_tanks[target].y();
+        if (found && (startR != endR || startC != endC)) {
+            Node step = { endR, endC };
+            while (parent[step.r][step.c].r != startR || parent[step.r][step.c].c != startC) {
+                step = parent[step.r][step.c];
+            }
+            tx = (step.c + 0.5f) * cw;
+            ty = (step.r + 0.5f) * ch;
+        }
 
-        float rad = tank.angle() * (3.14159265f / 180.f); // Define rad
-        float dx = m_tanks[bot.targetPid].x() - tank.x();
-        float dy = m_tanks[bot.targetPid].y() - tank.y();
-        float dist = sqrtf(dx * dx + dy * dy);
-        float desiredAngle = atan2f(dy, dx) * 180.f / 3.14159265f;
-        float angleDiff = desiredAngle - tank.angle();
+        // Reactive Avoidance: If immediate front is blocked, override pathfinding to reverse/turn
+        float rad = tank.angle() * (3.14159f / 180.f);
+        float frontX = tank.x() + std::cos(rad) * 40.0f;
+        float frontY = tank.y() + std::sin(rad) * 40.0f;
 
-        while (angleDiff > 180.f) angleDiff -= 360.f;
-        while (angleDiff < -180.f) angleDiff += 360.f;
-
-        // Turn toward target
-        if (angleDiff > 10.f) m_inputs[i].right = 1;
-        else if (angleDiff < -10.f) m_inputs[i].left = 1;
-
-        // --- Whisker Obstacle Avoidance ---
-        float lookDist = 70.f;
-        float fx = tank.x() + cosf(rad) * lookDist;
-        float fy = tank.y() + sinf(rad) * lookDist;
-
-        if (checkWall(fx, fy)) {
-            m_inputs[i].forward = 0;
-            m_inputs[i].back = 1; // Back away from wall
-            // Veer away
-            if (angleDiff > 0) m_inputs[i].left = 1; else m_inputs[i].right = 1;
+        if (!isSafe(frontX, frontY)) {
+            inp.back = 1;      // Reverse
+            inp.right = 1;     // Turn to get unstuck
         }
         else {
-            if (dist > 150.f) m_inputs[i].forward = 1;
-            else if (dist < 100.f) m_inputs[i].back = 1;
+            float angleToTarget = std::atan2(ty - tank.y(), tx - tank.x()) * 180.f / 3.14159f;
+            float diff = angleToTarget - tank.angle();
+            while (diff > 180) diff -= 360; while (diff < -180) diff += 360;
+
+            if (diff > 10.f) inp.right = 1; else if (diff < -10.f) inp.left = 1;
+            if (std::abs(diff) < 45.f) inp.forward = 1;
         }
 
-        if (fabsf(angleDiff) < 25.f && dist < 500.f) m_inputs[i].fire = 1;
+        // Firing Logic
+        if (bestD < 600 * 600) {
+            float angleToPlayer = std::atan2(m_tanks[target].y() - tank.y(), m_tanks[target].x() - tank.x()) * 180.f / 3.14159f;
+            float fireDiff = angleToPlayer - tank.angle();
+            while (fireDiff > 180) fireDiff -= 360; while (fireDiff < -180) fireDiff += 360;
+            if (std::abs(fireDiff) < 15.f) inp.fire = 1;
+        }
     }
 }

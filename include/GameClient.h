@@ -82,6 +82,8 @@ private:
 
     float m_dt = 0.f;
 
+    uint8_t m_spectateTarget = 0xFF; // 0xFF means ALL (whole map). for spectating
+
     //  Pause menu 
     bool  m_pauseOpen  = false;
     float m_volume     = 50.f;   // 0–100  music + SFX

@@ -303,9 +303,9 @@ void GameClient::generateObstacles(uint32_t seed)
     }
 }
 
-// ════════════════════════════════════════════════════════════════════════════
+
 // Main loop
-// ════════════════════════════════════════════════════════════════════════════
+
 void GameClient::run()
 {
     sf::RenderWindow window(
@@ -423,9 +423,9 @@ void GameClient::run()
     m_net.send(&d,sizeof(d));
 }
 
-// ════════════════════════════════════════════════════════════════════════════
+
 // Packet processing
-// ════════════════════════════════════════════════════════════════════════════
+
 void GameClient::processPackets()
 {
     Envelope e;
@@ -590,35 +590,77 @@ void GameClient::processPackets()
     }
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// Input
-// ════════════════════════════════════════════════════════════════════════════
-void GameClient::sendInput(sf::RenderWindow& /*w*/)
-{
-    if(m_chatActive) return;
-    PktInput inp;
-    inp.pid     = m_pid;
-    inp.seq     = m_inputSeq++;
-    inp.forward = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::W) ? 1:0;
-    inp.back    = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::S) ? 1:0;
-    inp.left    = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::A) ? 1:0;
-    inp.right   = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::D) ? 1:0;
-    inp.fire    = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Space) ? 1:0;
-    m_net.send(&inp,sizeof(inp));
 
-    m_stateAge  += m_dt;
-    m_gameTime  += m_dt;
-    // Tick explosion particles
-    for(auto& e : m_explosions) e.timer -= m_dt;
-    m_explosions.erase(
-        std::remove_if(m_explosions.begin(), m_explosions.end(),
-            [](const Explosion& e){ return e.timer <= 0.f; }),
-        m_explosions.end());
+// Input
+void GameClient::sendInput(sf::RenderWindow& w)
+{
+    if (m_chatActive) return;
+
+    bool localAlive = (m_pid < MAX_PLAYERS && m_gameState.players[m_pid].alive);
+
+    if (localAlive)
+    {
+        PktInput inp;
+        inp.pid = m_pid;
+        inp.seq = m_inputSeq++;
+        inp.forward = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::W) ? 1 : 0;
+        inp.back = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::S) ? 1 : 0;
+        inp.left = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::A) ? 1 : 0;
+        inp.right = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::D) ? 1 : 0;
+        inp.fire = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Space) ? 1 : 0;
+        m_net.send(&inp, sizeof(inp));
+    }
+    else
+    {
+        // Cycle spectator logic via screen buttons
+        static bool lmbWasDown = false;
+        bool lmbNow = sf::Mouse::isButtonPressed(sf::Mouse::Button::Left);
+
+        if (lmbNow && !lmbWasDown)
+        {
+            auto mp = sf::Mouse::getPosition(w);
+            // Button geometry (must match drawing logic)
+            const float btnY = 47.f, btnW = 30.f, btnH = 30.f;
+            const float lX = WIN_W * 0.5f - 165.f;
+            const float rX = WIN_W * 0.5f + 135.f;
+
+            bool hitL = (mp.x >= lX && mp.x <= lX + btnW && mp.y >= btnY && mp.y <= btnY + btnH);
+            bool hitR = (mp.x >= rX && mp.x <= rX + btnW && mp.y >= btnY && mp.y <= btnY + btnH);
+
+            if (hitL || hitR)
+            {
+                // Gather list of valid targets: 0xFF (Map) + all living human players
+                std::vector<uint8_t> targets = { 0xFF };
+                for (int i = 0; i < MAX_PLAYERS; i++) {
+                    if (m_lobby.slots[i].active && m_gameState.players[i].alive)
+                        targets.push_back((uint8_t)i);
+                }
+
+                // Find current index in valid target list
+                int idx = 0;
+                for (size_t i = 0; i < targets.size(); i++) {
+                    if (targets[i] == m_spectateTarget) { idx = (int)i; break; }
+                }
+
+                // Cycle
+                if (hitR) idx = (idx + 1) % targets.size();
+                else idx = (idx - 1 + (int)targets.size()) % targets.size();
+
+                m_spectateTarget = targets[idx];
+            }
+        }
+        lmbWasDown = lmbNow;
+    }
+
+    m_stateAge += m_dt;
+    m_gameTime += m_dt;
+    for (auto& e : m_explosions) e.timer -= m_dt;
+    m_explosions.erase(std::remove_if(m_explosions.begin(), m_explosions.end(),
+        [](const Explosion& e) { return e.timer <= 0.f; }), m_explosions.end());
 }
 
-// ════════════════════════════════════════════════════════════════════════════
 // Draw helpers
-// ════════════════════════════════════════════════════════════════════════════
+
 void GameClient::drawConnecting(sf::RenderWindow& w)
 {
     if(!m_fontLoaded) return;
@@ -726,7 +768,7 @@ void GameClient::drawLobby(sf::RenderWindow& w)
         w.draw(mainT);
 
         // "- Lobby" subtitle
-        auto sub = makeText("- Lobby", 20, sf::Color(160,200,140));
+        auto sub = makeText("Lobby", 20, sf::Color(160,200,140));
         auto sbb = sub.getLocalBounds();
         sub.setOrigin({sbb.size.x/2.f, 0.f});
         sub.setPosition({WIN_W/2.f, 78.f});
@@ -784,6 +826,35 @@ void GameClient::drawLobby(sf::RenderWindow& w)
             auto t = makeText(line, 22, nameCol);
             t.setPosition({220.f, y+16.f});
             w.draw(t);
+        }
+
+        if (m_isAdmin && sl.isBot) {
+            float xX = 820.f; // Position to the right of the player entry
+            float xY = y + 15.f;
+            float xSize = 30.f;
+
+            // Check hover/click
+            auto mp = sf::Mouse::getPosition(w);
+            bool hov = (mp.x >= xX && mp.x <= xX + xSize && mp.y >= xY && mp.y <= xY + xSize);
+
+            sf::RectangleShape kickBtn({ xSize, xSize });
+            kickBtn.setPosition({ xX, xY });
+            kickBtn.setFillColor(hov ? sf::Color(255, 50, 50) : sf::Color(150, 0, 0));
+            w.draw(kickBtn);
+
+            auto xText = makeText("X", 20, sf::Color::White);
+            xText.setPosition({ xX + 8.f, xY + 2.f });
+            w.draw(xText);
+
+            static bool lmbWasDown = false;
+            bool lmbDown = sf::Mouse::isButtonPressed(sf::Mouse::Button::Left);
+            if (hov && lmbDown && !lmbWasDown) {
+                PktKickBot kb;
+                kb.requestPid = m_pid;
+                kb.botPid = (uint8_t)i;
+                m_net.send(&kb, sizeof(kb));
+            }
+            lmbWasDown = lmbDown;
         }
     }
 
@@ -1386,34 +1457,31 @@ void GameClient::drawChat(sf::RenderWindow& w)
 
 void GameClient::drawInGame(sf::RenderWindow& w)
 {
-    // Determine whether we are alive or dead
-    bool localAlive = false;
-    if(m_pid < MAX_PLAYERS && m_lobby.slots[m_pid].active)
-        localAlive = m_gameState.players[m_pid].alive;
+    bool localAlive = (m_pid < MAX_PLAYERS) && m_gameState.players[m_pid].alive;
+    uint8_t target = localAlive ? m_pid : m_spectateTarget;
 
-    if(localAlive)
+    if (target != 0xFF && target < MAX_PLAYERS && m_gameState.players[target].alive)
     {
-        //  Follow-cam: centered on our tank, zoomed in 
-        auto& ps  = m_gameState.players[m_pid];
+        auto& ps = m_gameState.players[target];
         float camX = ps.x;
         float camY = ps.y;
 
-        const float ZOOM  = 0.55f;
+        const float ZOOM = 0.55f;
         const float halfW = WIN_W * 0.5f * ZOOM;
         const float halfH = WIN_H * 0.5f * ZOOM;
-        camX = std::max(halfW,  std::min((float)MAP_W - halfW,  camX));
-        camY = std::max(halfH,  std::min((float)MAP_H - halfH,  camY));
 
-        sf::View gameView(sf::Vector2f(camX, camY),
-                          sf::Vector2f((float)WIN_W * ZOOM, (float)WIN_H * ZOOM));
+        camX = std::max(halfW, std::min((float)MAP_W - halfW, camX));
+        camY = std::max(halfH, std::min((float)MAP_H - halfH, camY));
+
+        sf::View gameView(sf::Vector2f(camX, camY), sf::Vector2f((float)WIN_W * ZOOM, (float)WIN_H * ZOOM));
         w.setView(gameView);
 
         drawBackground(w);
         drawObstacles(w);
-        for(int i=0;i<MAX_BARRELS;i++)    drawBarrel(w,m_gameState.barrels[i]);
-        for(auto& p:m_gameState.powerups) drawPowerup(w,p);
-        for(int i=0;i<MAX_PLAYERS;i++)    drawTank(w,m_gameState.players[i],(uint8_t)i);
-        for(auto& b:m_gameState.bullets)  drawBullet(w,b);
+        for (int i = 0; i < MAX_BARRELS; i++)    drawBarrel(w, m_gameState.barrels[i]);
+        for (auto& p : m_gameState.powerups) drawPowerup(w, p);
+        for (int i = 0; i < MAX_PLAYERS; i++)    drawTank(w, m_gameState.players[i], (uint8_t)i);
+        for (auto& b : m_gameState.bullets)  drawBullet(w, b);
         drawExplosions(w);
         drawBorder(w);
 
@@ -1421,70 +1489,95 @@ void GameClient::drawInGame(sf::RenderWindow& w)
     }
     else
     {
-        //  Spectator view: full map visible, bordered like before 
-        // Fit the whole map inside the window with a fixed margin for the border
-        const float MARGIN  = 40.f;   // screen-space margin on each side
-        const float availW  = WIN_W - MARGIN * 2.f;
-        const float availH  = WIN_H - MARGIN * 2.f;
-        float scaleToFit    = std::min(availW / MAP_W, availH / MAP_H);
-        float viewW         = WIN_W / scaleToFit;   // world units visible
-        float viewH         = WIN_H / scaleToFit;
+        const float MARGIN = 40.f;
+        const float availW = WIN_W - MARGIN * 2.f;
+        const float availH = WIN_H - MARGIN * 2.f;
 
-        sf::View spectView(sf::Vector2f((float)MAP_W*0.5f, (float)MAP_H*0.5f),
-                           sf::Vector2f(viewW, viewH));
+        float scaleToFit = std::min(availW / MAP_W, availH / MAP_H);
+        float viewW = WIN_W / scaleToFit;
+        float viewH = WIN_H / scaleToFit;
+
+        sf::View spectView(sf::Vector2f((float)MAP_W * 0.5f, (float)MAP_H * 0.5f), sf::Vector2f(viewW, viewH));
         w.setView(spectView);
 
         drawBackground(w);
         drawObstacles(w);
-        for(int i=0;i<MAX_BARRELS;i++)    drawBarrel(w,m_gameState.barrels[i]);
-        for(auto& p:m_gameState.powerups) drawPowerup(w,p);
-        for(int i=0;i<MAX_PLAYERS;i++)    drawTank(w,m_gameState.players[i],(uint8_t)i);
-        for(auto& b:m_gameState.bullets)  drawBullet(w,b);
+        for (int i = 0; i < MAX_BARRELS; i++)    drawBarrel(w, m_gameState.barrels[i]);
+        for (auto& p : m_gameState.powerups) drawPowerup(w, p);
+        for (int i = 0; i < MAX_PLAYERS; i++)    drawTank(w, m_gameState.players[i], (uint8_t)i);
+        for (auto& b : m_gameState.bullets)  drawBullet(w, b);
         drawExplosions(w);
         drawBorder(w);
 
-        // Back to screen space for the overlay border and text
         w.setView(w.getDefaultView());
-
-        // Draw the screen-space armoured border frame (like the original fixed border)
         drawScreenBorder(w, MARGIN);
-
-        // DEAD / SPECTATING overlay text
-        if(m_fontLoaded)
-        {
-            // Semi-transparent banner at the top of the map area
-            sf::RectangleShape banner({WIN_W - MARGIN*2.f, 44.f});
-            banner.setPosition({MARGIN, MARGIN});
-            banner.setFillColor(sf::Color(0,0,0,140));
-            w.draw(banner);
-
-            auto dead = makeText("YOU ARE DEAD", 22, sf::Color(220,60,60));
-            dead.setStyle(sf::Text::Bold);
-            auto db = dead.getLocalBounds();
-            dead.setPosition({WIN_W*0.5f - db.size.x*0.5f - db.position.x,
-                               MARGIN + 8.f});
-            w.draw(dead);
-
-            auto spec = makeText("SPECTATING", 14, sf::Color(150,160,180));
-            auto sb = spec.getLocalBounds();
-            spec.setPosition({WIN_W*0.5f - sb.size.x*0.5f - sb.position.x,
-                               MARGIN + 28.f});
-            w.draw(spec);
-        }
     }
 
-    // HUD / chat / hints always in screen space
+    // --- UI Overlays (Drawn in Screen Space) ---
+    if (!localAlive && m_fontLoaded)
+    {
+        const float MARGIN = 40.f;
+        const float BANNER_H = 44.f;
+
+        sf::RectangleShape banner({ WIN_W - MARGIN * 2.f, BANNER_H });
+        banner.setPosition({ MARGIN, MARGIN });
+        banner.setFillColor(sf::Color(0, 0, 0, 140));
+        w.draw(banner);
+
+        auto dead = makeText("YOU ARE DEAD", 22, sf::Color(220, 60, 60));
+        dead.setStyle(sf::Text::Bold);
+        auto db = dead.getLocalBounds();
+        dead.setPosition({ WIN_W * 0.5f - db.size.x * 0.5f - (float)db.position.x, MARGIN + 4.f });
+        w.draw(dead);
+
+        std::string targetName = (m_spectateTarget == 0xFF) ? "ALL" : pidName(m_spectateTarget);
+        auto spec = makeText("SPECTATING: " + targetName, 14, sf::Color(150, 160, 180));
+        auto sb = spec.getLocalBounds();
+        spec.setPosition({ WIN_W * 0.5f - sb.size.x * 0.5f - (float)sb.position.x, MARGIN + 26.f });
+        w.draw(spec);
+
+        // Define shared UI constants to match sendInput logic
+        const float btnY = 47.f, btnW = 30.f, btnH = 30.f;
+        const float lX = (float)WIN_W * 0.5f - 165.f;
+        const float rX = (float)WIN_W * 0.5f + 135.f;
+
+        auto drawBtn = [&](float x, float y, const std::string& txt) {
+            sf::RectangleShape b({ btnW, btnH });
+            b.setPosition({ x, y });
+
+            auto mp = sf::Mouse::getPosition(w);
+            bool hov = (mp.x >= x && mp.x <= x + btnW && mp.y >= y && mp.y <= y + btnH);
+
+            b.setFillColor(hov ? sf::Color(100, 100, 100) : sf::Color(50, 50, 50));
+            b.setOutlineThickness(1.f);
+            b.setOutlineColor(sf::Color::White);
+            w.draw(b);
+
+            auto t = makeText(txt, 18);
+            auto tb = t.getLocalBounds();
+            t.setPosition({ x + (btnW / 2.f) - tb.size.x * 0.5f - (float)tb.position.x,
+                            y + (btnH / 2.f) - tb.size.y * 0.5f - (float)tb.position.y });
+            w.draw(t);
+            };
+
+        // Render buttons at the calculated coordinates
+        drawBtn(lX, btnY, "<");
+        drawBtn(rX, btnY, ">");
+    }
+
     drawHUD(w);
     drawChat(w);
 
-    if(m_fontLoaded){
+    if (m_fontLoaded)
+    {
         bool talking = m_voice.isTalking();
-        sf::Color hcol = talking ? sf::Color(100,255,100) : sf::Color(80,80,80);
+        sf::Color hcol = talking ? sf::Color(100, 255, 100) : sf::Color(80, 80, 80);
         std::string hint = localAlive
             ? "WASD=Move  Space=Fire  Enter=Chat  Esc=Menu  V=Voice"
-            : "Esc=Menu  V=Voice  (Spectating)";
+            : "Click Arrows to Cycle  Esc=Menu  V=Voice  (Spectating)";
+
         auto h = makeText(hint + (talking ? "  [MIC ON]" : ""), 14, hcol);
-        h.setPosition({10.f, (float)WIN_H - 18.f});
+        h.setPosition({ 10.f, (float)WIN_H - 18.f });
         w.draw(h);
     }
 }
@@ -1598,9 +1691,9 @@ void GameClient::drawMatchOver(sf::RenderWindow& w)
     hint.setPosition({WIN_W/2.f-90.f,WIN_H-32.f}); w.draw(hint);
 }
 
-// ════════════════════════════════════════════════════════════════════════════
+
 // Pause Menu  (drawn on top of whatever the current phase is showing)
-// ════════════════════════════════════════════════════════════════════════════
+
 void GameClient::drawPauseMenu(sf::RenderWindow& w)
 {
     if(!m_fontLoaded) return;
@@ -1768,9 +1861,9 @@ void GameClient::drawPauseMenu(sf::RenderWindow& w)
     w.draw(esc);
 }
 
-// ════════════════════════════════════════════════════════════════════════════
+
 // Disconnected screen
-// ════════════════════════════════════════════════════════════════════════════
+
 void GameClient::drawDisconnected(sf::RenderWindow& w)
 {
     if(!m_fontLoaded) return;
@@ -1835,10 +1928,10 @@ void GameClient::drawDisconnected(sf::RenderWindow& w)
     w.draw(hint);
 }
 
-// ════════════════════════════════════════════════════════════════════════════
+
 // Background – drawn in WORLD space while the game view is active.
 // Covers the full MAP_W × MAP_H area with a dirt tactical ground.
-// ════════════════════════════════════════════════════════════════════════════
+
 void GameClient::drawBackground(sf::RenderWindow& w)
 {
     // Base dirt
@@ -1899,10 +1992,10 @@ void GameClient::drawBackground(sf::RenderWindow& w)
     }
 }
 
-// ════════════════════════════════════════════════════════════════════════════
+
 // Border – heavy armoured wall drawn IN WORLD SPACE around the map perimeter.
 // Called while the game view is active, so coordinates are world coordinates.
-// ════════════════════════════════════════════════════════════════════════════
+
 void GameClient::drawBorder(sf::RenderWindow& w)
 {
     const float BT = 40.f;   // border thickness in world units
@@ -1984,12 +2077,12 @@ void GameClient::drawBorder(sf::RenderWindow& w)
     }
 }
 
-// ============================================================================
+
 // Screen-space border -- drawn in DEFAULT VIEW coords (pixels).
 // Used in spectator/dead mode to frame the minimap with the same armoured
 // aesthetic as the world-space border, but fitted to the window edges.
 // margin = screen pixels of gap from window edge to playfield rect.
-// ============================================================================
+
 void GameClient::drawScreenBorder(sf::RenderWindow& w, float margin)
 {
     const float BT = margin;          // use the margin itself as thickness

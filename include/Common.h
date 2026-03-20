@@ -68,22 +68,22 @@ constexpr float BARREL_RADIUS      = 14.f;
 constexpr float BARREL_EXPLODE_R   = 80.f;  // explosion damage radius
 constexpr float EXPLOSION_DURATION = 0.6f;  // client-side visual duration
 
-// ════════════════════════════════════════════════════════════════════════════
+
 // Packet types
-// ════════════════════════════════════════════════════════════════════════════
+
 enum class PktType : uint8_t
 {
     // Lobby
     CONNECT         = 0,
     CONNECT_ACK     = 1,
-    LOBBY_STATE     = 2,   // server→all: full lobby snapshot
-    PLAYER_READY    = 3,   // client→server
-    GAME_START      = 4,   // server→all
+    LOBBY_STATE     = 2,   // server-all: full lobby snapshot
+    PLAYER_READY    = 3,   // client-server
+    GAME_START      = 4,   // server-all
     DISCONNECT      = 5,
 
     // In-game
     INPUT           = 10,
-    GAME_STATE      = 11,  // server→all: full game snapshot
+    GAME_STATE      = 11,  // server-all: full game snapshot
     BULLET_SPAWN    = 12,
     PLAYER_HIT      = 13,
     PLAYER_DEAD     = 14,
@@ -96,17 +96,17 @@ enum class PktType : uint8_t
     // Shop / profile
     BUY_SKIN        = 30,
     BUY_SKIN_ACK    = 31,
-    PROFILE_UPDATE  = 32,  // server→client: updated coins/xp/skins
+    PROFILE_UPDATE  = 32,  // server-client: updated coins/xp/skins
 
     // Powerups
-    POWERUP_STATE   = 50,  // server→all: powerup positions/types in game state
-    POWERUP_COLLECT = 51,  // server→all: a player collected a powerup
+    POWERUP_STATE   = 50,  // server-all: powerup positions/types in game state
+    POWERUP_COLLECT = 51,  // server-all: a player collected a powerup
 
     // Barrels
     BARREL_EXPLODE  = 55,  // server->all: barrel exploded
 
     // Voice chat
-    VOICE_DATA      = 60,  // client→server→others: compressed audio chunk
+    VOICE_DATA      = 60,  // client-server-others: compressed audio chunk
 
     // Utility
     PING            = 40,
@@ -114,16 +114,17 @@ enum class PktType : uint8_t
     ACK             = 42,
 
     // LAN Discovery
-    SERVER_ANNOUNCE = 70,   // server→broadcast: "I exist"
-    SERVER_QUERY    = 71,   // client→broadcast: "who's there?"
+    SERVER_ANNOUNCE = 70,   // server-broadcast: "I exist"
+    SERVER_QUERY    = 71,   // client-broadcast: "who's there?"
 
     // Admin / bot
-    ADD_BOT         = 80,   // host→server: add a bot player
+    ADD_BOT         = 80,   // host-server: add a bot player
+    KICK_BOT = 81,          
 };
 
-// ════════════════════════════════════════════════════════════════════════════
+
 // Packet structs  (all packed – safe over loopback/LAN)
-// ════════════════════════════════════════════════════════════════════════════
+
 #pragma pack(push,1)
 
 //  Lobby 
@@ -350,6 +351,12 @@ struct PktAddBot
 {
     PktType type       = PktType::ADD_BOT;
     uint8_t requestPid = 0;   // must match server's hostPid to be accepted
+};
+
+struct PktKickBot {
+    PktType type = PktType::KICK_BOT;
+    uint8_t requestPid = 0; // Must be host
+    uint8_t botPid = 0;     // Target bot
 };
 
 //  LAN Discovery 
