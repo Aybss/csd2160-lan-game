@@ -22,9 +22,9 @@
 #include "Network.h"
 #include "Common.h"
 
-// ============================================================
+
 // Global font
-// ============================================================
+
 static sf::Font g_font;
 static bool     g_fontLoaded = false;
 
@@ -40,9 +40,9 @@ static void loadFont()
         if (g_font.openFromFile(p)) { g_fontLoaded = true; break; }
 }
 
-// ============================================================
+
 // Layout constants & palette
-// ============================================================
+
 static constexpr int MW = 780;
 static constexpr int MH = 580;
 
@@ -56,9 +56,9 @@ static const sf::Color ERR_COL   {255,  80,  80, 255};
 static const sf::Color PANEL_BRD {35,   45,  65, 255};
 static const sf::Color GOLD_COL  {230, 180,  40, 255};
 
-// ============================================================
+
 // Draw helpers
-// ============================================================
+
 static sf::Text mkT(const std::string& s, unsigned sz,
                     sf::Color col = {200,210,225,255})
 {
@@ -158,9 +158,9 @@ static void drawTitleBar(sf::RenderWindow& w, float y = 38.f)
     ln.setFillColor(ACCENT); ln.setPosition({tx, y + 72.f}); w.draw(ln);
 }
 
-// ============================================================
+
 // Screen 1 – Username entry
-// ============================================================
+
 static std::string screenUsername(sf::RenderWindow& w)
 {
     std::string name;
@@ -268,9 +268,9 @@ static std::string screenUsername(sf::RenderWindow& w)
     return "";
 }
 
-// ============================================================
+
 // Screen 2 – Create or Join
-// ============================================================
+
 enum class MenuChoice { NONE, CREATE, JOIN };
 
 static MenuChoice screenMainMenu(sf::RenderWindow& w, const std::string& username)
@@ -353,9 +353,9 @@ static MenuChoice screenMainMenu(sf::RenderWindow& w, const std::string& usernam
     return MenuChoice::NONE;
 }
 
-// ============================================================
+
 // Screen 3 – LAN Server Browser
-// ============================================================
+
 static std::pair<std::string,uint16_t>
 screenBrowser(sf::RenderWindow& w, const std::string& /*username*/)
 {
@@ -446,7 +446,7 @@ screenBrowser(sf::RenderWindow& w, const std::string& /*username*/)
             }
         }
 
-        // ── Draw ──────────────────────────────────────────────────────────
+        //  Draw 
         w.clear(BG_DARK);
         drawGrid(w);
 
@@ -460,7 +460,7 @@ screenBrowser(sf::RenderWindow& w, const std::string& /*username*/)
             if (sc)
             {
                 float spin = uiClk.getElapsedTime().asSeconds();
-                const char* dots[] = {"   ","·  ","·· ","···"};
+                const char* dots[] = {"   ",".  ",".. ","..."};
                 auto st = mkT("Scanning" + std::string(dots[(int)(spin*3)%4]), 15, ACCENT2);
                 st.setPosition({22.f, 58.f}); w.draw(st);
             }
@@ -574,75 +574,89 @@ screenBrowser(sf::RenderWindow& w, const std::string& /*username*/)
     return {"",0};
 }
 
-// ============================================================
+
 // main
-// ============================================================
+
 int main(int /*argc*/, char* /*argv*/[])
 {
     loadFont();
 
-    sf::RenderWindow window(
-        sf::VideoMode({(unsigned)MW, (unsigned)MH}),
-        "TankArena",
-        sf::Style::Titlebar | sf::Style::Close);
-    window.setFramerateLimit(60);
-
-    // 1 – Username
-    std::string username = screenUsername(window);
-    if (username.empty() || !window.isOpen()) return 0;
-    if ((int)username.size() > 15) username = username.substr(0, 15);
-
-    // 2 – Main menu
-    MenuChoice choice = screenMainMenu(window, username);
-    if (!window.isOpen() || choice == MenuChoice::NONE) return 0;
-
-    std::string  serverIp   = "127.0.0.1";
-    uint16_t     serverPort = NET_PORT;
-
-    if (choice == MenuChoice::JOIN)
+    // Ask username once — persists across reconnects
+    std::string username;
     {
-        // 3 – LAN browser
-        auto [ip, port] = screenBrowser(window, username);
-        if (!window.isOpen()) return 0;
-        if (ip.empty()) return 0;   // user backed out
-        serverIp   = ip;
-        serverPort = port;
-        window.close();
+        sf::RenderWindow window(
+            sf::VideoMode({(unsigned)MW, (unsigned)MH}),
+            "TankArena",
+            sf::Style::Titlebar | sf::Style::Close);
+        window.setFramerateLimit(60);
+        username = screenUsername(window);
+        if (username.empty() || !window.isOpen()) return 0;
+        if ((int)username.size() > 15) username = username.substr(0, 15);
     }
-    else  // CREATE
-    {
-        window.close();
 
-        // Spawn server in a background thread (detached; lives for process lifetime)
-        std::thread([]()
+    // After GameClient exits (leave/disconnect) we come back here
+    while (true)
+    {
+        sf::RenderWindow window(
+            sf::VideoMode({(unsigned)MW, (unsigned)MH}),
+            "TankArena",
+            sf::Style::Titlebar | sf::Style::Close);
+        window.setFramerateLimit(60);
+
+        MenuChoice choice = screenMainMenu(window, username);
+        if (!window.isOpen() || choice == MenuChoice::NONE) return 0;
+
+        std::string  serverIp   = "127.0.0.1";
+        uint16_t     serverPort = NET_PORT;
+
+        if (choice == MenuChoice::JOIN)
         {
-            try { GameServer srv(NET_PORT); srv.run(); }
-            catch (const std::exception& ex)
-            { std::cerr << "[Server] Fatal: " << ex.what() << "\n"; }
-        }).detach();
+            auto [ip, port] = screenBrowser(window, username);
+            if (!window.isOpen()) return 0;
+            if (ip.empty()) continue;   // user backed out → re-show menu
+            serverIp   = ip;
+            serverPort = port;
+            window.close();
+        }
+        else  // CREATE
+        {
+            window.close();
 
-        // Give the server time to bind its socket
-        std::this_thread::sleep_for(std::chrono::milliseconds(350));
+            // Only spawn the server thread once per process lifetime
+            static bool s_serverStarted = false;
+            if (!s_serverStarted)
+            {
+                std::thread([]()
+                {
+                    try { GameServer srv(NET_PORT); srv.run(); }
+                    catch (const std::exception& ex)
+                    { std::cerr << "[Server] Fatal: " << ex.what() << "\n"; }
+                }).detach();
+                s_serverStarted = true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(350));
+            }
+            serverIp   = "127.0.0.1";
+            serverPort = NET_PORT;
+            std::cout << "[Launcher] Server started, joining as client...\n";
+        }
 
-        serverIp   = "127.0.0.1";
-        serverPort = NET_PORT;
-        std::cout << "[Launcher] Server started, joining as client...\n";
+        // Run game — when player leaves or gets disconnected, run() returns
+        try
+        {
+            std::cout << "[Launcher] Connecting to "
+                      << serverIp << ":" << serverPort
+                      << " as " << username << "\n";
+            GameClient cli(serverIp, serverPort, username);
+            cli.run();
+        }
+        catch (const std::exception& ex)
+        {
+            std::cerr << "[Client] Fatal: " << ex.what() << "\n";
+            return 1;
+        }
+
+        // Small pause so the old window fully closes before re-opening menu
+        std::this_thread::sleep_for(std::chrono::milliseconds(120));
+        // Loop → re-open menu window
     }
-
-    // 4 – Hand off to GameClient (opens its own window)
-    try
-    {
-        std::cout << "[Launcher] Connecting to "
-                  << serverIp << ":" << serverPort
-                  << " as " << username << "\n";
-        GameClient cli(serverIp, serverPort, username);
-        cli.run();
-    }
-    catch (const std::exception& ex)
-    {
-        std::cerr << "[Client] Fatal: " << ex.what() << "\n";
-        return 1;
-    }
-
-    return 0;
 }

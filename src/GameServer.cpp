@@ -86,7 +86,7 @@ void GameServer::run()
     }
 }
 
-// ── Packet dispatch ───────────────────────────────────────────────────────────
+//  Packet dispatch 
 void GameServer::handlePacket(const Envelope& e)
 {
     if(e.len < 1) return;
@@ -217,7 +217,7 @@ void GameServer::handleDisconnect(uint8_t pid)
     std::cout<<"[Server] pid "<<(int)pid<<" disconnected\n";
 }
 
-// ── Lobby ─────────────────────────────────────────────────────────────────────
+//  Lobby 
 void GameServer::broadcastLobbyState()
 {
     PktLobbyState ls;
@@ -258,7 +258,7 @@ void GameServer::startGame()
     std::cout<<"[Server] Game started! Seed="<<m_mapSeed<<"\n";
 }
 
-// ── Game ──────────────────────────────────────────────────────────────────────
+//  Game 
 void GameServer::generateMap(uint32_t seed)
 {
     m_obstacles.clear();
@@ -500,7 +500,14 @@ void GameServer::endMatch(uint8_t winner)
     m_db.save();
 
     PktMatchOver mo; mo.winner=winner;
-    for(int i=0;i<MAX_PLAYERS;i++) mo.kills[i]=m_tanks[i].kills();
+    for(int i=0;i<MAX_PLAYERS;i++){
+        mo.kills[i] = m_tanks[i].kills();
+        if(m_lobby[i].active){
+            int kills = m_tanks[i].kills();
+            mo.xpGained[i]    = (uint16_t)(kills*XP_PER_KILL    + (i==(int)winner ? XP_PER_WIN    : 0));
+            mo.coinsGained[i] = (uint16_t)(kills*COINS_PER_KILL + (i==(int)winner ? COINS_PER_WIN : 0));
+        }
+    }
 
     // Fill leaderboard
     auto top = m_db.topByWins(5);

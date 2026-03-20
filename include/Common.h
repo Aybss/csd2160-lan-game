@@ -3,13 +3,15 @@
 #include <string>
 #include <array>
 
-// ─── Window ──────────────────────────────────────────────────────────────────
+//  Window 
 constexpr int   WIN_W           = 1024;
 constexpr int   WIN_H           = 768;
-constexpr int   MAP_W           = 1024;
-constexpr int   MAP_H           = 768;
+constexpr int   MAP_W           = 900;   // playfield inside the rendered border
+constexpr int   MAP_H           = 648;
+constexpr int   MAP_OFFSET_X    = 62;    // (WIN_W - MAP_W) / 2
+constexpr int   MAP_OFFSET_Y    = 60;    // (WIN_H - MAP_H) / 2
 
-// ─── Gameplay ────────────────────────────────────────────────────────────────
+//  Gameplay 
 constexpr int   MAX_PLAYERS     = 6;
 constexpr int   MIN_PLAYERS     = 2;   // min to start
 constexpr float TANK_SPEED      = 160.f;
@@ -27,15 +29,15 @@ constexpr int   COINS_PER_WIN   = 50;
 constexpr int   XP_PER_LEVEL    = 200;
 constexpr uint16_t NET_PORT     = 54100;
 
-// ─── Skin definitions ────────────────────────────────────────────────────────
+//  Skin definitions 
 constexpr int SKIN_COUNT = 6;
 // Prices in coins (index 0 = default, free)
 constexpr int SKIN_PRICES[SKIN_COUNT] = { 0, 40, 80, 120, 160, 200 };
 
-// ─── Map obstacle
+//  Map obstacle
 struct Obstacle { float x, y, w, h; };
 
-// ─── Powerups ────────────────────────────────────────────────────────────────
+//  Powerups 
 constexpr int   MAX_POWERUPS     = 4;
 constexpr float POWERUP_RADIUS   = 14.f;
 constexpr float POWERUP_DURATION = 6.f;   // seconds buff lasts
@@ -47,20 +49,20 @@ enum class PowerupType : uint8_t
     SHIELD     = 2,   // absorbs next hit
 };
 
-// ─── Voice ───────────────────────────────────────────────────────────────────
+//  Voice 
 constexpr int VOICE_FRAME_MS    = 20;    // Opus frame size in ms
 constexpr int VOICE_SAMPLE_RATE = 16000; // 16kHz mono
 constexpr int VOICE_MAX_BYTES   = 400;   // max compressed bytes per frame
 
-// ─── Chat ────────────────────────────────────────────────────────────────────
+//  Chat 
 constexpr int MAX_CHAT_MSG  = 48;
 constexpr int MAX_CHAT_HIST = 12;
 
-// ─── Obstacle grid ───────────────────────────────────────────────────────────
+//  Obstacle grid 
 constexpr int OBS_COLS = 8;
 constexpr int OBS_ROWS = 6;
 
-// ─── Explosive barrels ───────────────────────────────────────────────────────
+//  Explosive barrels 
 constexpr int   MAX_BARRELS        = 6;
 constexpr float BARREL_RADIUS      = 14.f;
 constexpr float BARREL_EXPLODE_R   = 80.f;  // explosion damage radius
@@ -121,7 +123,7 @@ enum class PktType : uint8_t
 // ════════════════════════════════════════════════════════════════════════════
 #pragma pack(push,1)
 
-// ── Lobby ────────────────────────────────────────────────────────────────────
+//  Lobby 
 struct PktConnect
 {
     PktType type = PktType::CONNECT;
@@ -173,7 +175,7 @@ struct PktDisconnect
     uint8_t pid  = 0;
 };
 
-// ── In-game ──────────────────────────────────────────────────────────────────
+//  In-game 
 struct PktInput
 {
     PktType  type    = PktType::INPUT;
@@ -280,7 +282,7 @@ struct PktMatchOver
     uint16_t lbLevel[5]{};
 };
 
-// ── Chat ─────────────────────────────────────────────────────────────────────
+//  Chat 
 struct PktChat
 {
     PktType type = PktType::CHAT;
@@ -288,7 +290,7 @@ struct PktChat
     char    msg[MAX_CHAT_MSG]{};
 };
 
-// ── Shop ─────────────────────────────────────────────────────────────────────
+//  Shop 
 struct PktBuySkin
 {
     PktType type    = PktType::BUY_SKIN;
@@ -314,7 +316,7 @@ struct PktProfileUpdate
     uint16_t totalWins    = 0;
 };
 
-// ── Powerups ─────────────────────────────────────────────────────────────────
+//  Powerups 
 struct PktPowerupCollect
 {
     PktType     type  = PktType::POWERUP_COLLECT;
@@ -323,7 +325,7 @@ struct PktPowerupCollect
     PowerupType ptype = PowerupType::SPEED;
 };
 
-// ── Voice ─────────────────────────────────────────────────────────────────────
+//  Voice 
 struct PktVoiceData
 {
     PktType  type    = PktType::VOICE_DATA;
@@ -332,14 +334,14 @@ struct PktVoiceData
     uint8_t  data[VOICE_MAX_BYTES]{};
 };
 
-// ── Utility ──────────────────────────────────────────────────────────────────
+//  Utility 
 struct PktAck
 {
     PktType  type = PktType::ACK;
     uint32_t seq  = 0;
 };
 
-// ── LAN Discovery ─────────────────────────────────────────────────────────────
+//  LAN Discovery 
 struct PktServerAnnounce
 {
     PktType  type         = PktType::SERVER_ANNOUNCE;

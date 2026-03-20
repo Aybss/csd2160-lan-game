@@ -64,7 +64,7 @@ public:
     bool pollEnvelope(Envelope& out);
 
     // Timeout check – returns pids that timed out (removes them internally)
-    std::vector<uint8_t> checkTimeouts(float nowSec, float timeoutSec = 30.f);
+    std::vector<uint8_t> checkTimeouts(float nowSec, float timeoutSec = 90.f);
 
     // Register a new client; returns assigned pid or 0xFF on failure
     uint8_t registerClient(const sockaddr_in& addr, const char* name, float nowSec);
@@ -103,7 +103,7 @@ private:
     friend class GameClient;  // GameClient sets m_connected/m_pid on ack
 };
 
-// ── LAN discovery ──────────────────────────────────────────────────────────────
+//  LAN discovery 
 struct DiscoveredServer
 {
     std::string ip;

@@ -10,7 +10,7 @@
 
 static constexpr float DEG2RAD = 3.14159265f / 180.f;
 
-// ── Skin base colours (used as fallback and for HUD tints) ──────────────────
+//  Skin base colours (used as fallback and for HUD tints) 
 static const sf::Color SKIN_COLORS[SKIN_COUNT] = {
     sf::Color(80,160,80),     // 0 Army
     sf::Color(110,90,60),     // 1 Camo
@@ -119,7 +119,7 @@ void GameClient::generateSkinTextures()
 
     for(int s=0;s<SKIN_COUNT;s++)
     {
-        // ── Body texture ──────────────────────────────────────────────────
+        //  Body texture 
         m_skinBodyRT[s].resize({TW,TH});
         m_skinBodyRT[s].clear(sf::Color::Transparent);
 
@@ -242,7 +242,7 @@ void GameClient::generateSkinTextures()
         m_skinBodyRT[s].display();
         m_skinBodyTex[s] = m_skinBodyRT[s].getTexture();
 
-        // ── Turret texture ────────────────────────────────────────────────
+        //  Turret texture 
         m_skinTurretRT[s].resize({BW,BH});
         m_skinTurretRT[s].clear(sf::Color::Transparent);
 
@@ -311,7 +311,23 @@ void GameClient::run()
         {
             if(ev->is<sf::Event::Closed>()) window.close();
 
-            if(m_phase==ClientPhase::LOBBY || m_phase==ClientPhase::IN_GAME)
+            if(const auto* kp = ev->getIf<sf::Event::KeyPressed>())
+            {
+                // Esc: toggle pause menu (lobby + in-game), or close chat, or exit disconnect screen
+                if(kp->code == sf::Keyboard::Key::Escape)
+                {
+                    if(m_phase == ClientPhase::DISCONNECTED)
+                        window.close();
+                    else if(m_chatActive)
+                    { m_chatActive=false; m_chatInput.clear(); }
+                    else if(m_phase==ClientPhase::LOBBY || m_phase==ClientPhase::IN_GAME
+                         || m_phase==ClientPhase::ROUND_OVER)
+                        m_pauseOpen = !m_pauseOpen;
+                }
+            }
+
+            if(!m_pauseOpen &&
+               (m_phase==ClientPhase::LOBBY || m_phase==ClientPhase::IN_GAME))
             {
                 if(const auto* kp = ev->getIf<sf::Event::KeyPressed>())
                 {
@@ -327,8 +343,6 @@ void GameClient::run()
                             m_chatActive=false;
                         } else m_chatActive=true;
                     }
-                    if(kp->code == sf::Keyboard::Key::Escape && m_chatActive)
-                    { m_chatActive=false; m_chatInput.clear(); }
                     if(kp->code == sf::Keyboard::Key::Backspace && m_chatActive && !m_chatInput.empty())
                         m_chatInput.pop_back();
                 }
@@ -348,32 +362,45 @@ void GameClient::run()
         m_net.poll();
         processPackets();
 
-        // Voice chat runs in all phases (lobby, in-game, end screen)
-        m_voice.setTalking(sf::Keyboard::isKeyPressed(sf::Keyboard::Key::V));
+        // Keepalive ping so server doesn't time us out when window is unfocused
+        m_keepaliveTimer += m_dt;
+        if(m_keepaliveTimer >= 5.f)
+        {
+            m_keepaliveTimer = 0.f;
+            if(m_phase != ClientPhase::CONNECTING && m_phase != ClientPhase::DISCONNECTED)
+            {
+                uint8_t ping[2] = { (uint8_t)PktType::PING, m_pid };
+                m_net.send(ping, 2);
+            }
+        }
+
+        // Voice chat runs in all phases
+        m_voice.setTalking(!m_pauseOpen && sf::Keyboard::isKeyPressed(sf::Keyboard::Key::V));
         m_voice.tick();
 
         // Retry connect
         if(m_phase==ClientPhase::CONNECTING)
         {
-            static float retryTimer=0.f;
-            retryTimer+=m_dt;
-            if(retryTimer>1.5f){
+            m_keepaliveTimer += m_dt;  // reuse timer for retry spacing
+            if(m_keepaliveTimer>1.5f){
                 PktConnect conn2; strncpy(conn2.name,m_username.c_str(),15);
                 m_net.send(&conn2,sizeof(conn2));
-                retryTimer=0.f;
+                m_keepaliveTimer=0.f;
             }
         }
 
         window.clear(sf::Color(15,15,25));
         switch(m_phase)
         {
-            case ClientPhase::CONNECTING:  drawConnecting(window);  break;
-            case ClientPhase::LOBBY:       updateLobby(window); drawLobby(window); break;
-            case ClientPhase::SHOP:        updateShop(window);  drawShop(window);  break;
-            case ClientPhase::IN_GAME:     sendInput(window); drawInGame(window);  break;
-            case ClientPhase::ROUND_OVER:  drawRoundOver(window); break;
-            case ClientPhase::MATCH_OVER:  drawMatchOver(window);  break;
+            case ClientPhase::CONNECTING:   drawConnecting(window);  break;
+            case ClientPhase::LOBBY:        updateLobby(window); drawLobby(window); break;
+            case ClientPhase::SHOP:         updateShop(window);  drawShop(window);  break;
+            case ClientPhase::IN_GAME:      if(!m_pauseOpen) sendInput(window); drawInGame(window); break;
+            case ClientPhase::ROUND_OVER:   drawRoundOver(window); break;
+            case ClientPhase::MATCH_OVER:   drawMatchOver(window);  break;
+            case ClientPhase::DISCONNECTED: drawDisconnected(window); break;
         }
+        if(m_pauseOpen) drawPauseMenu(window);
         window.display();
     }
 
@@ -391,6 +418,10 @@ void GameClient::processPackets()
     {
         if(e.len<1) continue;
         PktType t=(PktType)e.buf[0];
+
+        // Once disconnected, ignore everything that could change phase
+        if(m_phase == ClientPhase::DISCONNECTED) continue;
+
         switch(t)
         {
             case PktType::CONNECT_ACK:
@@ -522,9 +553,20 @@ void GameClient::processPackets()
             case PktType::DISCONNECT:
                 if(e.len>=(int)sizeof(PktDisconnect)){
                     PktDisconnect d; memcpy(&d,e.buf,sizeof(d));
-                    std::string line = "*** " + pidName(d.pid) + " disconnected ***";
-                    m_chatHistory.push_back(line);
-                    if((int)m_chatHistory.size()>MAX_CHAT_HIST) m_chatHistory.pop_front();
+                    if(d.pid == m_pid)
+                    {
+                        // Server kicked US — show disconnected screen
+                        m_disconnectMsg = "You were disconnected from the server.";
+                        m_phase = ClientPhase::DISCONNECTED;
+                        m_pauseOpen = false;
+                        if(m_audioOk) m_bgm.stop();
+                    }
+                    else
+                    {
+                        std::string line = "*** " + pidName(d.pid) + " disconnected ***";
+                        m_chatHistory.push_back(line);
+                        if((int)m_chatHistory.size()>MAX_CHAT_HIST) m_chatHistory.pop_front();
+                    }
                 } break;
 
             default: break;
@@ -574,8 +616,7 @@ void GameClient::updateLobby(sf::RenderWindow& w)
     static bool rHeld=false;
     static bool sHeld=false;
 
-    if(m_chatActive){
-        // Reset held state so keys dont fire the moment chat closes
+    if(m_chatActive || m_pauseOpen){
         rHeld = true;
         sHeld = true;
         (void)w; return;
@@ -602,7 +643,7 @@ void GameClient::drawLobby(sf::RenderWindow& w)
     if(!m_fontLoaded) return;
 
     // Title
-    // ── 3D camo title ─────────────────────────────────────────────────────
+    //  3D camo title 
     {
         const std::string titleStr = "TANK NET";
         const unsigned fontSize = 52;
@@ -706,7 +747,7 @@ void GameClient::drawLobby(sf::RenderWindow& w)
     }
 
     // Controls hint
-    std::string lobbyHint = "[R] Ready  [O] Shop  [Enter] Chat  [V] Voice";
+    std::string lobbyHint = "[R] Ready  [O] Shop  [Enter] Chat  [Esc] Menu  [V] Voice";
     if(m_voice.isTalking()) lobbyHint += "  [MIC ON]";
     auto hint = makeText(lobbyHint, 18, m_voice.isTalking() ? sf::Color(100,255,100) : sf::Color(160,160,160));
     hint.setPosition({160.f, WIN_H-60.f});
@@ -846,7 +887,7 @@ void GameClient::drawObstacles(sf::RenderWindow& w)
 
         if(sz > 80.f)
         {
-            // ── Boulder ───────────────────────────────────────────────────
+            //  Boulder 
             // Base dark grey fill
             sf::RectangleShape base({o.w,o.h});
             base.setPosition({o.x,o.y});
@@ -896,7 +937,7 @@ void GameClient::drawObstacles(sf::RenderWindow& w)
         }
         else if(sz > 50.f)
         {
-            // ── Stone wall ────────────────────────────────────────────────
+            //  Stone wall 
             sf::RectangleShape wall({o.w,o.h});
             wall.setPosition({o.x,o.y});
             wall.setFillColor(sf::Color(100,92,80));
@@ -931,7 +972,7 @@ void GameClient::drawObstacles(sf::RenderWindow& w)
         }
         else
         {
-            // ── Tree / bush ───────────────────────────────────────────────
+            //  Tree / bush 
             // Brown trunk
             float trunkW = o.w*0.25f;
             float trunkH = o.h*0.4f;
@@ -976,27 +1017,55 @@ void GameClient::drawTank(sf::RenderWindow& w, const PlayerState& ps, uint8_t pi
 
     if(m_texturesGenerated)
     {
-        // ── Textured body ─────────────────────────────────────────────────
+        //  Textured body 
         sf::Sprite body(m_skinBodyTex[skin]);
         auto tb = m_skinBodyTex[skin].getSize();
         body.setOrigin({tb.x/2.f, tb.y/2.f});
         body.setPosition({ps.x, ps.y});
         body.setRotation(sf::degrees(ps.angle));
-        // Scale to match TANK_RADIUS
         float scaleX = (TANK_RADIUS*2.f) / (float)tb.x;
         float scaleY = (TANK_RADIUS*1.6f) / (float)tb.y;
         body.setScale({scaleX, scaleY});
         w.draw(body);
 
-        // ── Textured barrel ───────────────────────────────────────────────
-        sf::Sprite barrel(m_skinTurretTex[skin]);
-        auto tt = m_skinTurretTex[skin].getSize();
-        barrel.setOrigin({0.f, tt.y/2.f});
-        barrel.setPosition({ps.x, ps.y});
-        barrel.setRotation(sf::degrees(ps.angle));
-        float bscale = (TANK_RADIUS*0.45f) / (float)tt.y;
-        barrel.setScale({bscale, bscale});
-        w.draw(barrel);
+        //  Barrel(s): double barrel for rapid-fire buff 
+        uint8_t buffsEarly = (pid < MAX_PLAYERS) ? m_gameState.buffs[pid] : 0;
+        bool rapidFire = (buffsEarly & 0x02) != 0;
+
+        auto drawBarrelSprite = [&](float sideOffset)
+        {
+            sf::Sprite barrel(m_skinTurretTex[skin]);
+            auto tt = m_skinTurretTex[skin].getSize();
+            barrel.setOrigin({0.f, tt.y/2.f});
+            float bscale = (TANK_RADIUS*0.45f) / (float)tt.y;
+            barrel.setScale({bscale, bscale});
+
+            if(sideOffset == 0.f)
+            {
+                barrel.setPosition({ps.x, ps.y});
+                barrel.setRotation(sf::degrees(ps.angle));
+            }
+            else
+            {
+                // Offset perpendicular to the barrel direction
+                float rad = ps.angle * 3.14159265f / 180.f;
+                float px = ps.x + std::cos(rad + 1.5708f) * sideOffset;
+                float py = ps.y + std::sin(rad + 1.5708f) * sideOffset;
+                barrel.setPosition({px, py});
+                barrel.setRotation(sf::degrees(ps.angle));
+            }
+            w.draw(barrel);
+        };
+
+        if(rapidFire)
+        {
+            drawBarrelSprite(-5.f);   // left barrel
+            drawBarrelSprite( 5.f);   // right barrel
+        }
+        else
+        {
+            drawBarrelSprite(0.f);    // single centred barrel
+        }
     }
     else
     {
@@ -1275,29 +1344,41 @@ void GameClient::drawChat(sf::RenderWindow& w)
 
 void GameClient::drawInGame(sf::RenderWindow& w)
 {
+    drawBackground(w);
+
+    // Push a view that offsets all game-world draws into the playfield rect
+    sf::View gameView(sf::FloatRect(
+        {0.f, 0.f}, {(float)MAP_W, (float)MAP_H}));
+    gameView.setViewport(sf::FloatRect(
+        {(float)MAP_OFFSET_X / WIN_W, (float)MAP_OFFSET_Y / WIN_H},
+        {(float)MAP_W / WIN_W,        (float)MAP_H / WIN_H}));
+    w.setView(gameView);
+
     drawObstacles(w);
     for(int i=0;i<MAX_BARRELS;i++)    drawBarrel(w,m_gameState.barrels[i]);
     for(auto& p:m_gameState.powerups) drawPowerup(w,p);
     for(int i=0;i<MAX_PLAYERS;i++)    drawTank(w,m_gameState.players[i],(uint8_t)i);
     for(auto& b:m_gameState.bullets)  drawBullet(w,b);
     drawExplosions(w);
+
+    // Restore default view for HUD/border/chat (pixel-perfect overlay)
+    w.setView(w.getDefaultView());
+    drawBorder(w);
     drawHUD(w);
     drawChat(w);
 
-    // Controls reminder (small, bottom)
     if(m_fontLoaded){
         bool talking = m_voice.isTalking();
-        std::string hint = "WASD=Move  Space=Fire  Enter=Chat  V=Voice";
+        std::string hint = "WASD=Move  Space=Fire  Enter=Chat  Esc=Menu  V=Voice";
         sf::Color hcol = talking ? sf::Color(100,255,100) : sf::Color(80,80,80);
-        std::string voiceStatus = talking ? "  [MIC ON]" : "";
-        auto h=makeText(hint + voiceStatus, 14, hcol);
-        h.setPosition({10.f,WIN_H-18.f}); w.draw(h);
+        auto h=makeText(hint + (talking ? "  [MIC ON]" : ""), 14, hcol);
+        h.setPosition({10.f,(float)WIN_H-18.f}); w.draw(h);
     }
 }
 
 void GameClient::drawRoundOver(sf::RenderWindow& w)
 {
-    drawInGame(w);  // show final state underneath
+    drawInGame(w);  // show final state underneath (already handles offset)
     if(!m_fontLoaded) return;
     sf::RectangleShape overlay({(float)WIN_W,(float)WIN_H});
     overlay.setFillColor(sf::Color(0,0,0,140));
@@ -1329,40 +1410,518 @@ void GameClient::drawMatchOver(sf::RenderWindow& w)
 
     std::string winner = "Winner: " + pidName(m_matchOver.winner);
     auto wt=makeText(winner,30,sf::Color::Cyan);
-    wt.setPosition({WIN_W/2.f-120.f,100.f});
+    auto wb=wt.getLocalBounds();
+    wt.setPosition({WIN_W/2.f-wb.size.x/2.f,96.f});
     w.draw(wt);
 
-    // Stats
-    float y=160.f;
-    auto sh=makeText("Player          Kills   XP+   Coins+",22,sf::Color(180,180,180));
-    sh.setPosition({100.f,y}); w.draw(sh); y+=30.f;
+    //  Per-player stats table 
+    float y=150.f;
+    auto sh=makeText("Player            Kills    XP Earned   Coins Earned",20,sf::Color(160,170,180));
+    sh.setPosition({80.f,y}); w.draw(sh); y+=4.f;
+    // Separator line
+    sf::RectangleShape sep({860.f,1.f}); sep.setFillColor(sf::Color(60,70,90));
+    sep.setPosition({80.f,y+20.f}); w.draw(sep); y+=26.f;
+
     for(int i=0;i<MAX_PLAYERS;i++){
         if(!m_lobby.slots[i].active) continue;
-        std::string row = std::string(m_lobby.slots[i].name);
-        while((int)row.size()<16) row+=" ";
-        row += std::to_string(m_matchOver.kills[i]) + "       " +
-               std::to_string(m_matchOver.xpGained[i]) + "    " +
-               std::to_string(m_matchOver.coinsGained[i]);
-        auto rt=makeText(row,20,skinColor(m_gameState.players[i].skin));
-        rt.setPosition({100.f,y}); w.draw(rt);
+
+        bool isMe = (i == (int)m_pid);
+        sf::Color rowCol = isMe ? sf::Color::Cyan : skinColor(m_lobby.slots[i].skin);
+
+        // Highlight row for local player
+        if(isMe){
+            sf::RectangleShape hl({860.f,24.f});
+            hl.setFillColor(sf::Color(0,60,80,120));
+            hl.setPosition({80.f,y-2.f}); w.draw(hl);
+        }
+
+        std::string name = std::string(m_lobby.slots[i].name);
+        while((int)name.size()<18) name+=" ";
+
+        // kills
+        char buf[128];
+        snprintf(buf, sizeof(buf), "%-18s  %3d      +%-6u      +%u",
+                 name.c_str(),
+                 (int)m_matchOver.kills[i],
+                 (unsigned)m_matchOver.xpGained[i],
+                 (unsigned)m_matchOver.coinsGained[i]);
+
+        auto rt=makeText(buf,20,rowCol);
+        rt.setPosition({80.f,y}); w.draw(rt);
         y+=26.f;
     }
 
-    // Leaderboard
-    y+=20.f;
-    auto lbh=makeText("Global Leaderboard (Top 5 by Wins)",22,sf::Color::Yellow);
-    lbh.setPosition({100.f,y}); w.draw(lbh); y+=30.f;
+    //  My updated totals (from latest PROFILE_UPDATE) 
+    y+=6.f;
+    sf::RectangleShape sep2({860.f,1.f}); sep2.setFillColor(sf::Color(60,70,90));
+    sep2.setPosition({80.f,y}); w.draw(sep2); y+=10.f;
+    char totBuf[128];
+    snprintf(totBuf,sizeof(totBuf),"Your totals:  XP %u  |  Coins %u  |  Lv.%u",
+             (unsigned)m_profile.xp,(unsigned)m_profile.coins,(unsigned)m_profile.level);
+    auto tot=makeText(totBuf,18,sf::Color::Yellow);
+    tot.setPosition({80.f,y}); w.draw(tot); y+=30.f;
+
+    //  Leaderboard 
+    y+=8.f;
+    auto lbh=makeText("Global Leaderboard  (Top 5 by Wins)",20,sf::Color(230,180,40));
+    lbh.setPosition({80.f,y}); w.draw(lbh); y+=28.f;
     for(int i=0;i<5;i++){
         if(m_matchOver.lbName[i][0]=='\0') break;
-        std::string row = std::to_string(i+1)+". "+m_matchOver.lbName[i];
-        while((int)row.size()<20) row+=" ";
-        row += "Wins:"+std::to_string(m_matchOver.lbWins[i])+"  Lv."+std::to_string(m_matchOver.lbLevel[i]);
-        auto lt=makeText(row,20,sf::Color::White);
-        lt.setPosition({100.f,y}); w.draw(lt);
-        y+=24.f;
+        char lbBuf[64];
+        snprintf(lbBuf,sizeof(lbBuf),"%d.  %-16s  Wins: %-4u  Lv.%u",
+                 i+1, m_matchOver.lbName[i],
+                 (unsigned)m_matchOver.lbWins[i],
+                 (unsigned)m_matchOver.lbLevel[i]);
+        auto lt=makeText(lbBuf,18,i==0?sf::Color(255,220,60):sf::Color::White);
+        lt.setPosition({80.f,y}); w.draw(lt);
+        y+=22.f;
     }
-    std::string endHint = "[Esc] Quit  [V] Voice";
-    if(m_voice.isTalking()) endHint += "  [MIC ON]";
-    auto hint=makeText(endHint,18, m_voice.isTalking() ? sf::Color(100,255,100) : sf::Color(120,120,120));
-    hint.setPosition({WIN_W/2.f-80.f,WIN_H-40.f}); w.draw(hint);
+
+    //  Footer hint 
+    bool talking = m_voice.isTalking();
+    std::string endHint = "[Esc] Menu    [V] Voice";
+    if(talking) endHint += "  [MIC ON]";
+    auto hint=makeText(endHint,16, talking ? sf::Color(100,255,100) : sf::Color(100,110,130));
+    hint.setPosition({WIN_W/2.f-90.f,WIN_H-32.f}); w.draw(hint);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Pause Menu  (drawn on top of whatever the current phase is showing)
+// ════════════════════════════════════════════════════════════════════════════
+void GameClient::drawPauseMenu(sf::RenderWindow& w)
+{
+    if(!m_fontLoaded) return;
+
+    // Dimmed full-screen overlay
+    sf::RectangleShape overlay({(float)WIN_W,(float)WIN_H});
+    overlay.setFillColor(sf::Color(0,0,0,170));
+    w.draw(overlay);
+
+    // Card — wider and taller to fit two sliders + two buttons comfortably
+    const float CW=440.f, CH=420.f;
+    const float CX=(WIN_W-CW)*0.5f, CY=(WIN_H-CH)*0.5f;
+    sf::RectangleShape card({CW,CH});
+    card.setPosition({CX,CY});
+    card.setFillColor(sf::Color(16,20,32,250));
+    card.setOutlineThickness(2.f);
+    card.setOutlineColor(sf::Color(0,200,140));
+    w.draw(card);
+
+    // Accent bar at top of card
+    sf::RectangleShape accentBar({CW,4.f});
+    accentBar.setPosition({CX,CY});
+    accentBar.setFillColor(sf::Color(0,200,140));
+    w.draw(accentBar);
+
+    // Title
+    auto title = makeText("PAUSED",30,sf::Color(0,200,140));
+    title.setStyle(sf::Text::Bold);
+    auto tb = title.getLocalBounds();
+    title.setPosition({CX+(CW-tb.size.x)*0.5f-tb.position.x, CY+16.f});
+    w.draw(title);
+
+    // Thin divider under title
+    sf::RectangleShape div({CW-60.f,1.f});
+    div.setFillColor(sf::Color(40,55,75));
+    div.setPosition({CX+30.f, CY+58.f});
+    w.draw(div);
+
+    auto mp = sf::Mouse::getPosition(w);
+    bool lmbDown = sf::Mouse::isButtonPressed(sf::Mouse::Button::Left);
+
+    //  Generic slider helper 
+    //  returns true if the value changed this frame
+    auto drawSlider = [&](const std::string& label, float sY,
+                          float& value, sf::Color fillCol) -> bool
+    {
+        auto lbl = makeText(label, 15, sf::Color(160,170,190));
+        lbl.setPosition({CX+30.f, sY});
+        w.draw(lbl);
+
+        const float TX=CX+30.f, TY=sY+26.f, TW=CW-100.f, TH=6.f;
+
+        // Track
+        sf::RectangleShape track({TW,TH});
+        track.setPosition({TX,TY}); track.setFillColor(sf::Color(35,45,65));
+        w.draw(track);
+        // Fill
+        float frac = value/100.f;
+        if(frac>0.f){
+            sf::RectangleShape fill({TW*frac,TH});
+            fill.setPosition({TX,TY}); fill.setFillColor(fillCol);
+            w.draw(fill);
+        }
+        // Thumb
+        float thumbX = TX + TW*frac;
+        bool overThumb = std::abs(mp.x - thumbX) < 14.f &&
+                         std::abs(mp.y - (TY+TH*0.5f)) < 14.f;
+        sf::CircleShape thumb(overThumb ? 10.f : 8.f);
+        thumb.setOrigin({thumb.getRadius(),thumb.getRadius()});
+        thumb.setPosition({thumbX, TY+TH*0.5f});
+        thumb.setFillColor(overThumb ? sf::Color(255,255,255) : fillCol);
+        thumb.setOutlineThickness(1.5f);
+        thumb.setOutlineColor(sf::Color(200,240,230,180));
+        w.draw(thumb);
+        // Percentage label
+        char vbuf[8]; snprintf(vbuf,sizeof(vbuf),"%d%%",(int)value);
+        auto vt=makeText(vbuf, 14, sf::Color(170,185,200));
+        vt.setPosition({TX+TW+10.f, TY-4.f}); w.draw(vt);
+
+        // Drag
+        bool changed = false;
+        if(lmbDown && mp.x>=TX-8 && mp.x<=TX+TW+8 &&
+           mp.y>=TY-14 && mp.y<=TY+TH+14)
+        {
+            float newVal = std::max(0.f, std::min(100.f,
+                (float)(mp.x-TX)/TW*100.f));
+            if(newVal != value){ value=newVal; changed=true; }
+        }
+        return changed;
+    };
+
+    //  Music / SFX volume 
+    if(drawSlider("Music & SFX Volume", CY+72.f, m_volume, sf::Color(0,200,140)))
+    {
+        if(m_audioOk) m_bgm.setVolume(m_volume*0.35f);
+        if(m_sndShoot)   m_sndShoot->setVolume(m_volume);
+        if(m_sndHit)     m_sndHit->setVolume(m_volume);
+        if(m_sndDead)    m_sndDead->setVolume(m_volume);
+        if(m_sndPowerup) m_sndPowerup->setVolume(m_volume);
+    }
+
+    //  Voice chat volume 
+    if(drawSlider("Voice Chat Volume", CY+154.f, m_voiceVolume, sf::Color(80,180,255)))
+    {
+        // VoicePlayer doesn't expose a volume API directly, but we can scale
+        // by storing the value and applying it when feeding audio to SFML Sound
+        // For now the value is stored and applied in VoicePlayer::tick via global
+        // We pass it through the VoiceChat manager
+        m_voice.setVolume(m_voiceVolume);
+    }
+
+    // Divider above buttons
+    sf::RectangleShape div2({CW-60.f,1.f});
+    div2.setFillColor(sf::Color(40,55,75));
+    div2.setPosition({CX+30.f, CY+238.f});
+    w.draw(div2);
+
+    //  Button helper (edge-triggered via static tracker) 
+    auto drawBtn = [&](float y, const std::string& lbl,
+                       sf::Color normCol, sf::Color hovCol,
+                       bool& wasHov) -> bool
+    {
+        const float BX=CX+30.f, BW=CW-60.f, BH=44.f;
+        bool h = (mp.x>=(int)BX && mp.x<=(int)(BX+BW) &&
+                  mp.y>=(int)y  && mp.y<=(int)(y+BH));
+        sf::RectangleShape btn({BW,BH});
+        btn.setPosition({BX,y});
+        btn.setFillColor(h ? hovCol : normCol);
+        btn.setOutlineThickness(1.f);
+        btn.setOutlineColor(sf::Color(50,65,85));
+        w.draw(btn);
+        auto lt = makeText(lbl, 18, h ? sf::Color::Black : sf::Color(200,210,230));
+        auto lb = lt.getLocalBounds();
+        lt.setPosition({BX+(BW-lb.size.x)*0.5f-lb.position.x,
+                        y +(BH-lb.size.y)*0.5f-lb.position.y});
+        w.draw(lt);
+        bool clicked = h && lmbDown && !wasHov;
+        wasHov = h && lmbDown;
+        return clicked;
+    };
+
+    static bool resumeHov=false, leaveHov=false;
+
+    if(drawBtn(CY+256.f, "Resume  (Esc)",
+               sf::Color(24,36,54), sf::Color(0,180,120), resumeHov))
+        m_pauseOpen = false;
+
+    std::string leaveLbl = (m_phase==ClientPhase::LOBBY) ? "Leave Lobby" : "Leave Game";
+    if(drawBtn(CY+314.f, leaveLbl,
+               sf::Color(55,15,15), sf::Color(200,55,55), leaveHov))
+    {
+        PktDisconnect d; d.pid=m_pid;
+        m_net.send(&d,sizeof(d));
+        m_disconnectMsg = "You left the " +
+            std::string(m_phase==ClientPhase::LOBBY ? "lobby." : "game.");
+        m_phase = ClientPhase::DISCONNECTED;
+        m_pauseOpen = false;
+        if(m_audioOk) m_bgm.stop();
+    }
+
+    // Bottom hint
+    auto esc=makeText("[Esc] to Resume", 13, sf::Color(55,68,88));
+    auto eb=esc.getLocalBounds();
+    esc.setPosition({CX+(CW-eb.size.x)*0.5f-eb.position.x, CY+CH-22.f});
+    w.draw(esc);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Disconnected screen
+// ════════════════════════════════════════════════════════════════════════════
+void GameClient::drawDisconnected(sf::RenderWindow& w)
+{
+    if(!m_fontLoaded) return;
+
+    // Full dark background
+    sf::RectangleShape bg({(float)WIN_W,(float)WIN_H});
+    bg.setFillColor(sf::Color(8,10,16));
+    w.draw(bg);
+
+    // Broken-connection X icon
+    const float CX=WIN_W*0.5f, CY=WIN_H*0.5f-70.f;
+    for(int i=-1;i<=1;i+=2)
+    {
+        sf::RectangleShape arm({80.f,12.f});
+        arm.setOrigin({40.f,6.f});
+        arm.setPosition({CX,CY});
+        arm.setRotation(sf::degrees(45.f*(float)i));
+        arm.setFillColor(sf::Color(220,60,60));
+        w.draw(arm);
+    }
+
+    // Title
+    auto title=makeText("DISCONNECTED",32,sf::Color(220,60,60));
+    title.setStyle(sf::Text::Bold);
+    auto tb=title.getLocalBounds();
+    title.setPosition({WIN_W*0.5f-tb.size.x*0.5f-tb.position.x, CY+52.f});
+    w.draw(title);
+
+    // Message
+    if(!m_disconnectMsg.empty())
+    {
+        auto msg=makeText(m_disconnectMsg,18,sf::Color(150,160,180));
+        auto mb=msg.getLocalBounds();
+        msg.setPosition({WIN_W*0.5f-mb.size.x*0.5f-mb.position.x, CY+96.f});
+        w.draw(msg);
+    }
+
+    // "Return to Menu" button
+    const float BW=220.f, BH=44.f;
+    const float BX=WIN_W*0.5f-BW*0.5f, BY=CY+145.f;
+    auto mp = sf::Mouse::getPosition(w);
+    bool hov = mp.x>=(int)BX && mp.x<=(int)(BX+BW) &&
+               mp.y>=(int)BY && mp.y<=(int)(BY+BH);
+    sf::RectangleShape btn({BW,BH});
+    btn.setPosition({BX,BY});
+    btn.setFillColor(hov ? sf::Color(0,160,100) : sf::Color(20,32,48));
+    btn.setOutlineThickness(1.5f);
+    btn.setOutlineColor(sf::Color(0,200,140));
+    w.draw(btn);
+    auto bl=makeText("Return to Menu",18,hov?sf::Color::Black:sf::Color(0,200,140));
+    auto bb=bl.getLocalBounds();
+    bl.setPosition({BX+(BW-bb.size.x)*0.5f-bb.position.x,
+                    BY+(BH-bb.size.y)*0.5f-bb.position.y});
+    w.draw(bl);
+    if(hov && sf::Mouse::isButtonPressed(sf::Mouse::Button::Left))
+        w.close();
+
+    // Hint
+    auto hint=makeText("Press Esc or click Return to Menu",14,sf::Color(50,60,80));
+    auto hb=hint.getLocalBounds();
+    hint.setPosition({WIN_W*0.5f-hb.size.x*0.5f-hb.position.x, WIN_H-44.f});
+    w.draw(hint);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Background – drawn behind the playfield in default view coordinates
+// A dusty tactical ground: base dirt colour + faint grid + tyre-track marks
+// ════════════════════════════════════════════════════════════════════════════
+void GameClient::drawBackground(sf::RenderWindow& w)
+{
+    //  Outer margin fill (dark gunmetal — visible around the border) 
+    sf::RectangleShape outer({(float)WIN_W,(float)WIN_H});
+    outer.setFillColor(sf::Color(22,24,30));
+    w.draw(outer);
+
+    //  Playfield dirt base 
+    const float PX=(float)MAP_OFFSET_X, PY=(float)MAP_OFFSET_Y;
+    const float PW=(float)MAP_W,        PH=(float)MAP_H;
+
+    sf::RectangleShape dirt({PW,PH});
+    dirt.setPosition({PX,PY});
+    dirt.setFillColor(sf::Color(52,46,36));   // warm earthy brown
+    w.draw(dirt);
+
+    //  Faint tactical grid (10×10 cells) 
+    const float CELL = 64.f;
+    sf::Color gridCol(60,54,42,100);
+    for(float x=PX; x<=PX+PW; x+=CELL)
+    {
+        sf::RectangleShape ln({1.f,PH});
+        ln.setFillColor(gridCol); ln.setPosition({x,PY}); w.draw(ln);
+    }
+    for(float y=PY; y<=PY+PH; y+=CELL)
+    {
+        sf::RectangleShape ln({PW,1.f});
+        ln.setFillColor(gridCol); ln.setPosition({PX,y}); w.draw(ln);
+    }
+
+    //  Procedural dirt patches (deterministic pseudo-random) 
+    auto lcg = [](unsigned& s) -> unsigned {
+        s = s*1664525u+1013904223u; return s;
+    };
+    unsigned seed = 0xCAFEBABE;
+    for(int i=0;i<60;i++)
+    {
+        float px2 = PX + (float)(lcg(seed)%(int)PW);
+        float py2 = PY + (float)(lcg(seed)%(int)PH);
+        float r   = 18.f + (float)(lcg(seed)%28);
+        uint8_t v = 42 + (uint8_t)(lcg(seed)%18);
+        sf::CircleShape patch(r);
+        patch.setOrigin({r,r}); patch.setPosition({px2,py2});
+        patch.setFillColor(sf::Color(v+8,v,v-6,80));
+        w.draw(patch);
+    }
+
+    //  Tyre-track marks (pairs of thin parallel lines) 
+    seed = 0xDEAD1234;
+    for(int i=0;i<14;i++)
+    {
+        float tx = PX + 30.f + (float)(lcg(seed)%(int)(PW-60));
+        float ty = PY + 30.f + (float)(lcg(seed)%(int)(PH-60));
+        float len = 60.f + (float)(lcg(seed)%80);
+        float ang = (float)(lcg(seed)%180);
+        sf::Color tc(36,30,22,120);
+        for(int side=-1;side<=1;side+=2)
+        {
+            sf::RectangleShape track({len,3.f});
+            track.setFillColor(tc);
+            track.setOrigin({len*0.5f,1.5f});
+            track.setPosition({tx+(float)side*5.f,ty});
+            track.setRotation(sf::degrees(ang));
+            w.draw(track);
+        }
+    }
+
+    //  Subtle vignette on playfield edges 
+    const float VIG = 30.f;
+    // Top strip
+    for(int k=0;k<(int)VIG;k++){
+        uint8_t a=(uint8_t)(70*(1.f-(float)k/VIG));
+        sf::RectangleShape v({PW,1.f});
+        v.setFillColor(sf::Color(0,0,0,a));
+        v.setPosition({PX,PY+(float)k}); w.draw(v);
+    }
+    // Bottom strip
+    for(int k=0;k<(int)VIG;k++){
+        uint8_t a=(uint8_t)(70*(1.f-(float)k/VIG));
+        sf::RectangleShape v({PW,1.f});
+        v.setFillColor(sf::Color(0,0,0,a));
+        v.setPosition({PX,PY+PH-(float)k}); w.draw(v);
+    }
+    // Left strip
+    for(int k=0;k<(int)VIG;k++){
+        uint8_t a=(uint8_t)(70*(1.f-(float)k/VIG));
+        sf::RectangleShape v({1.f,PH});
+        v.setFillColor(sf::Color(0,0,0,a));
+        v.setPosition({PX+(float)k,PY}); w.draw(v);
+    }
+    // Right strip
+    for(int k=0;k<(int)VIG;k++){
+        uint8_t a=(uint8_t)(70*(1.f-(float)k/VIG));
+        sf::RectangleShape v({1.f,PH});
+        v.setFillColor(sf::Color(0,0,0,a));
+        v.setPosition({PX+PW-(float)k,PY}); w.draw(v);
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Border – a heavy armoured wall drawn around the playfield in screen coords
+// ════════════════════════════════════════════════════════════════════════════
+void GameClient::drawBorder(sf::RenderWindow& w)
+{
+    const float PX=(float)MAP_OFFSET_X, PY=(float)MAP_OFFSET_Y;
+    const float PW=(float)MAP_W,        PH=(float)MAP_H;
+    const float BT=18.f;   // border thickness (each side)
+
+    //  Four concrete slab sides 
+    // Colours: base concrete, edge highlight, edge shadow
+    sf::Color baseCol (72, 68, 60);
+    sf::Color hiCol   (105,100,90,200);
+    sf::Color shadCol (35, 32, 28);
+    sf::Color boltCol (48, 44, 38);
+
+    auto drawSlab = [&](float x,float y,float sw,float sh)
+    {
+        sf::RectangleShape slab({sw,sh});
+        slab.setPosition({x,y}); slab.setFillColor(baseCol); w.draw(slab);
+        // top/left highlight edge
+        sf::RectangleShape hi({sw,3.f});
+        hi.setFillColor(hiCol); hi.setPosition({x,y}); w.draw(hi);
+        sf::RectangleShape hi2({3.f,sh});
+        hi2.setFillColor(hiCol); hi2.setPosition({x,y}); w.draw(hi2);
+        // bottom/right shadow edge
+        sf::RectangleShape sh2({sw,3.f});
+        sh2.setFillColor(shadCol); sh2.setPosition({x,y+sh-3.f}); w.draw(sh2);
+        sf::RectangleShape sh3({3.f,sh});
+        sh3.setFillColor(shadCol); sh3.setPosition({x+sw-3.f,y}); w.draw(sh3);
+    };
+
+    // Top slab
+    drawSlab(PX-BT, PY-BT, PW+BT*2, BT);
+    // Bottom slab
+    drawSlab(PX-BT, PY+PH,  PW+BT*2, BT);
+    // Left slab
+    drawSlab(PX-BT, PY,      BT, PH);
+    // Right slab
+    drawSlab(PX+PW, PY,      BT, PH);
+
+    //  Corner reinforcement plates 
+    sf::Color cornerCol(55,50,44);
+    auto drawCorner = [&](float x,float y)
+    {
+        sf::RectangleShape c({BT,BT});
+        c.setPosition({x,y}); c.setFillColor(cornerCol);
+        c.setOutlineThickness(2.f); c.setOutlineColor(shadCol);
+        w.draw(c);
+        // Diagonal stripe detail
+        sf::RectangleShape diag({BT*1.4f,3.f});
+        diag.setOrigin({BT*0.7f,1.5f});
+        diag.setPosition({x+BT*0.5f,y+BT*0.5f});
+        diag.setRotation(sf::degrees(45.f));
+        diag.setFillColor(sf::Color(40,36,30,160));
+        w.draw(diag);
+    };
+    drawCorner(PX-BT,    PY-BT);
+    drawCorner(PX+PW,    PY-BT);
+    drawCorner(PX-BT,    PY+PH);
+    drawCorner(PX+PW,    PY+PH);
+
+    //  Bolt rivets along the border 
+    auto drawBolt = [&](float x,float y)
+    {
+        sf::CircleShape bolt(3.5f);
+        bolt.setOrigin({3.5f,3.5f}); bolt.setPosition({x,y});
+        bolt.setFillColor(boltCol);
+        bolt.setOutlineThickness(1.f); bolt.setOutlineColor(sf::Color(25,22,18));
+        w.draw(bolt);
+        // Shine dot
+        sf::CircleShape shine(1.f);
+        shine.setOrigin({1.f,1.f}); shine.setPosition({x-1.f,y-1.f});
+        shine.setFillColor(sf::Color(130,124,110,160));
+        w.draw(shine);
+    };
+
+    // Top/bottom bolt rows
+    float boltStep = 60.f;
+    for(float x=PX+boltStep*0.5f; x<PX+PW; x+=boltStep)
+    {
+        drawBolt(x, PY-BT*0.5f);
+        drawBolt(x, PY+PH+BT*0.5f);
+    }
+    // Left/right bolt columns
+    for(float y=PY+boltStep*0.5f; y<PY+PH; y+=boltStep)
+    {
+        drawBolt(PX-BT*0.5f, y);
+        drawBolt(PX+PW+BT*0.5f, y);
+    }
+
+    //  Faint "DANGER ZONE" text on top border 
+    if(m_fontLoaded)
+    {
+        auto warn=makeText("D A N G E R   Z O N E", 11, sf::Color(90,82,70,160));
+        auto wb=warn.getLocalBounds();
+        warn.setPosition({PX+(PW-wb.size.x)*0.5f-wb.position.x, PY-BT+3.f});
+        w.draw(warn);
+    }
 }

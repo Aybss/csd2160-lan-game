@@ -109,6 +109,7 @@ void VoicePlayer::tick()
     if(m_buf.loadFromSamples(frame.data(), frame.size(), 1, VOICE_SAMPLE_RATE,
                              {sf::SoundChannel::Mono})){
         m_sound.emplace(m_buf);  // reconstruct with new buffer data
+        m_sound->setVolume(m_volume);
         m_sound->play();
     }
     m_jitter.pop_front();
@@ -151,6 +152,12 @@ void VoiceChat::init(uint8_t myPid, SendFn sendFn)
 void VoiceChat::setTalking(bool talking)
 {
     m_talking = talking && m_available;
+}
+
+void VoiceChat::setVolume(float v)
+{
+    for(int i=0;i<MAX_PLAYERS;i++)
+        if(m_players[i]) m_players[i]->setVolume(v);
 }
 
 void VoiceChat::feedIncoming(uint8_t pid, const uint8_t* data, int len)

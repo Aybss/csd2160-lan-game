@@ -174,7 +174,7 @@ bool ClientNet::pollEnvelope(Envelope& out)
     out=m_queue.front(); m_queue.pop(); return true;
 }
 
-// ── LAN discovery ──────────────────────────────────────────────────────────────
+//  LAN discovery 
 // Discovery protocol:
 //   1. Scanner binds to NET_PORT+1 (dedicated discovery port).
 //   2. Scanner broadcasts PktServerQuery to NET_PORT (game port).

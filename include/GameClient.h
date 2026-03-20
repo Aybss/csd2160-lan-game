@@ -11,7 +11,7 @@
 #include <deque>
 #include <optional>
 
-enum class ClientPhase { CONNECTING, LOBBY, SHOP, IN_GAME, ROUND_OVER, MATCH_OVER };
+enum class ClientPhase { CONNECTING, LOBBY, SHOP, IN_GAME, ROUND_OVER, MATCH_OVER, DISCONNECTED };
 
 class GameClient
 {
@@ -50,7 +50,7 @@ private:
 
     uint8_t m_roundWins[MAX_PLAYERS]{};
 
-    // ── SFML assets ───────────────────────────────────────────────────────
+    //  SFML assets 
     sf::Font        m_font;
     bool            m_fontLoaded = false;
 
@@ -59,11 +59,11 @@ private:
     sf::Music                    m_bgm;
     bool                         m_audioOk = false;
 
-    // ── Voice chat ────────────────────────────────────────────────────────
+    //  Voice chat 
     VoiceChat m_voice;
     bool      m_voiceInit = false;
 
-    // ── Explosion particles ───────────────────────────────────────────────
+    //  Explosion particles 
     struct Explosion {
         float x, y;       // centre
         float timer;      // counts down from EXPLOSION_DURATION
@@ -72,7 +72,7 @@ private:
     std::vector<Explosion> m_explosions;
     float m_gameTime = 0.f;  // for shield pulse
 
-    // ── Skin textures (procedurally generated at startup) ─────────────────
+    //  Skin textures (procedurally generated at startup) 
     // Each skin has a body texture and a turret texture
     sf::RenderTexture m_skinBodyRT[SKIN_COUNT];
     sf::RenderTexture m_skinTurretRT[SKIN_COUNT];
@@ -81,6 +81,13 @@ private:
     bool              m_texturesGenerated = false;
 
     float m_dt = 0.f;
+
+    //  Pause menu 
+    bool  m_pauseOpen  = false;
+    float m_volume     = 50.f;   // 0–100  music + SFX
+    float m_voiceVolume = 80.f;  // 0–100  voice chat
+    float m_keepaliveTimer = 0.f;
+    std::string m_disconnectMsg;  // shown on DISCONNECTED screen
 
     void processPackets();
     void sendInput(sf::RenderWindow& w);
@@ -94,6 +101,10 @@ private:
     void drawInGame    (sf::RenderWindow& w);
     void drawRoundOver (sf::RenderWindow& w);
     void drawMatchOver (sf::RenderWindow& w);
+    void drawPauseMenu (sf::RenderWindow& w);
+    void drawDisconnected(sf::RenderWindow& w);
+    void drawBackground(sf::RenderWindow& w);
+    void drawBorder    (sf::RenderWindow& w);
 
     void drawTank      (sf::RenderWindow& w, const PlayerState& ps, uint8_t pid);
     void drawBullet    (sf::RenderWindow& w, const BulletState& bs);

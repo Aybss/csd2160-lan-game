@@ -51,6 +51,7 @@ public:
     void feed(const uint8_t* data, int len);
     // Call every frame to play queued audio
     void tick();
+    void setVolume(float v) { m_volume = v; }
 
 private:
     OpusDecoder* m_dec = nullptr;
@@ -62,6 +63,7 @@ private:
     sf::SoundBuffer              m_buf;
     std::optional<sf::Sound>     m_sound;  // SFML 3: constructed after buffer loaded
     bool            m_playing = false;
+    float           m_volume  = 100.f;
 };
 
 //  Manager: owns one VoiceCapture + one VoicePlayer per remote player 
@@ -77,6 +79,9 @@ public:
     // Push-to-talk: call every frame with key state
     void setTalking(bool talking);
     bool isTalking() const { return m_talking; }
+
+    // Voice playback volume (0–100)
+    void setVolume(float v);
 
     // Feed incoming compressed audio from another player
     void feedIncoming(uint8_t pid, const uint8_t* data, int len);
