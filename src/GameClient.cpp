@@ -120,8 +120,10 @@ void GameClient::generateSkinTextures()
     for(int s=0;s<SKIN_COUNT;s++)
     {
         //  Body texture 
-        m_skinBodyRT[s].resize({TW,TH});
-        m_skinBodyRT[s].clear(sf::Color::Transparent);
+        if (!m_skinBodyRT[s].resize({ TW, TH })) {
+            std::cerr << "[Client] Failed to resize body texture for skin " << s << "\n";
+            continue;
+        }        m_skinBodyRT[s].clear(sf::Color::Transparent);
 
         sf::Color base = SKIN_COLORS[s];
         sf::Color dark(
@@ -243,8 +245,10 @@ void GameClient::generateSkinTextures()
         m_skinBodyTex[s] = m_skinBodyRT[s].getTexture();
 
         //  Turret texture 
-        m_skinTurretRT[s].resize({BW,BH});
-        m_skinTurretRT[s].clear(sf::Color::Transparent);
+        if (!m_skinBodyRT[s].resize({ BW, BH })) {
+            std::cerr << "[Client] Failed to resize body texture for skin " << s << "\n";
+            continue;
+        }        m_skinTurretRT[s].clear(sf::Color::Transparent);
 
         sf::RectangleShape barrel({(float)BW,(float)BH});
         barrel.setFillColor(dark);
