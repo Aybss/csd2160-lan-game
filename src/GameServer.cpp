@@ -282,35 +282,56 @@ void GameServer::generateMap(uint32_t seed)
 {
     m_obstacles.clear();
     srand(seed);
+
     float cellW = (float)MAP_W / OBS_COLS;
     float cellH = (float)MAP_H / OBS_ROWS;
+    int halfR = OBS_ROWS / 2;
+    int halfC = OBS_COLS / 2;
 
-    for(int r=1;r<OBS_ROWS-1;r++)
-    for(int c=1;c<OBS_COLS-1;c++)
+    for (int r = 1; r < halfR; r++)
     {
-        // Keep spawn corners clear (first and last 2 cells in each corner)
-        if(r<=1 && c<=1) continue;
-        if(r<=1 && c>=OBS_COLS-2) continue;
-        if(r>=OBS_ROWS-2 && c<=1) continue;
-        if(r>=OBS_ROWS-2 && c>=OBS_COLS-2) continue;
+        for (int c = 1; c < halfC; c++)
+        {
+            if (r <= 2 && c <= 2) continue; // Spawn clearance
 
-        // Decide what to put here — bias heavily toward small (trees/bushes)
-        int roll = rand()%10;
-        float bw, bh;
-        if(roll < 2)          // 20% large boulder
-        { bw=80.f+rand()%70; bh=80.f+rand()%70; }
-        else if(roll < 4)     // 20% medium wall
-        { bw=50.f+rand()%50; bh=50.f+rand()%50; }
-        else if(roll < 9)     // 50% small tree/bush (was previously ~33%)
-        { bw=20.f+rand()%25; bh=20.f+rand()%25; }
-        else continue;        // 10% empty cell
+            // Slightly higher density (20%) to accommodate trees
+            if (rand() % 100 > 20) continue;
 
-        float bx = c*cellW + (cellW-bw)*0.5f + (rand()%20-10);
-        float by = r*cellH + (cellH-bh)*0.5f + (rand()%20-10);
-        bx = std::max(10.f, std::min((float)MAP_W-bw-10.f, bx));
-        by = std::max(10.f, std::min((float)MAP_H-bh-10.f, by));
-        m_obstacles.push_back({bx,by,bw,bh});
+            int roll = rand() % 10;
+            float bw, bh;
+
+            if (roll < 3) {
+                // 30% Large Pillar (120-180px)
+                bw = 120.f + rand() % 60;
+                bh = 120.f + rand() % 60;
+            }
+            else if (roll < 6) {
+                // 30% Tree (Small & Circular-ish)
+                bw = 35.f + rand() % 15;
+                bh = 35.f + rand() % 15;
+            }
+            else {
+                // 40% Tactical Cover (60-100px)
+                bw = 60.f + rand() % 40;
+                bh = 60.f + rand() % 40;
+            }
+
+            float bx = c * cellW + (cellW - bw) * 0.5f;
+            float by = r * cellH + (cellH - bh) * 0.5f;
+
+            auto addSymmetric = [&](float x, float y, float w, float h) {
+                m_obstacles.push_back({ x, y, w, h });
+                m_obstacles.push_back({ (float)MAP_W - x - w, y, w, h });
+                m_obstacles.push_back({ x, (float)MAP_H - y - h, w, h });
+                m_obstacles.push_back({ (float)MAP_W - x - w, (float)MAP_H - y - h, w, h });
+                };
+
+            addSymmetric(bx, by, bw, bh);
+        }
     }
+
+    // Center Island
+    m_obstacles.push_back({ (MAP_W - 200.f) * 0.5f, (MAP_H - 200.f) * 0.5f, 200.f, 200.f });
 }
 
 std::array<std::pair<float,float>, MAX_PLAYERS> GameServer::spawnPositions()
@@ -799,15 +820,26 @@ void GameServer::handleAddBot(const PktAddBot& p)
     broadcastLobbyState();
 }
 
-// kick bot
+// kick player/bot
 void GameServer::handleKickBot(const PktKickBot& p) {
     if (p.requestPid != m_hostPid || p.botPid >= MAX_PLAYERS) return;
-    if (!m_lobby[p.botPid].isBot || !m_lobby[p.botPid].active) return;
+    if (!m_lobby[p.botPid].active) return;
 
+    // 1. If it's a human, send them the Disconnect packet first
+    if (!m_lobby[p.botPid].isBot) {
+        PktDisconnect d;
+        d.pid = p.botPid;
+        m_net.sendTo(p.botPid, &d, sizeof(d)); // This triggers the client's screen
+    }
+
+    // 2. Clean up server state
     m_lobby[p.botPid].active = false;
     m_bots[p.botPid].active = false;
+    m_tanks[p.botPid].takeDamage(999); // Ensure they are removed from the game world
 
-    std::cout << "[Server] Bot " << (int)p.botPid << " was kicked by host.\n";
+    std::cout << "[Server] " << (m_lobby[p.botPid].isBot ? "Bot " : "Player ")
+        << (int)p.botPid << " was kicked.\n";
+
     broadcastLobbyState();
 }
 
@@ -816,113 +848,111 @@ void GameServer::updateBots(float dt)
 {
     if (m_phase != ServerPhase::IN_GAME) return;
 
-    const int NAV_COLS = 32;
-    const int NAV_ROWS = 24;
+    // 1. Define Navigation Grid (60x45 for a 2400x1800 map)
+    const int NAV_COLS = 60;
+    const int NAV_ROWS = 45;
     bool blocked[NAV_ROWS][NAV_COLS] = { false };
     float cw = (float)MAP_W / NAV_COLS;
     float ch = (float)MAP_H / NAV_ROWS;
 
-    const float margin = TANK_RADIUS + 5.0f;
+    // 2. Obstacle Inflation
+    const float margin = TANK_RADIUS + 5.f;
     for (auto& o : m_obstacles) {
         int c1 = std::clamp((int)((o.x - margin) / cw), 0, NAV_COLS - 1);
         int r1 = std::clamp((int)((o.y - margin) / ch), 0, NAV_ROWS - 1);
         int c2 = std::clamp((int)((o.x + o.w + margin) / cw), 0, NAV_COLS - 1);
         int r2 = std::clamp((int)((o.y + o.h + margin) / ch), 0, NAV_ROWS - 1);
-        for (int r = r1; r <= r2; r++)
-            for (int c = c1; c <= c2; c++)
-                blocked[r][c] = true;
+        for (int r = r1; r <= r2; r++) {
+            for (int c = c1; c <= c2; c++) blocked[r][c] = true;
+        }
     }
 
-    auto isSafe = [&](float x, float y) {
-        if (x < margin || x > MAP_W - margin || y < margin || y > MAP_H - margin) return false;
-        for (auto& o : m_obstacles) {
-            float cx = std::max(o.x, std::min(x, o.x + o.w));
-            float cy = std::max(o.y, std::min(y, o.y + o.h));
-            if (std::pow(x - cx, 2) + std::pow(y - cy, 2) < std::pow(TANK_RADIUS + 2.0f, 2)) return false;
-        }
-        return true;
-        };
-
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (!m_bots[i].active || !m_tanks[i].alive()) continue;
+        if (!m_lobby[i].active || !m_lobby[i].isBot || !m_tanks[i].alive()) continue;
 
         auto& tank = m_tanks[i];
         auto& inp = m_inputs[i];
-        inp = PktInput{}; inp.pid = (uint8_t)i; inp.seq++;
+        inp = PktInput{};
+        inp.pid = (uint8_t)i;
+        inp.seq = m_stateSeq;
 
-        // Find nearest human player
-        uint8_t target = 0xFF;
-        float bestD = 1e9f;
+        // 3. TARGETING: Find nearest alive Player OR Bot
+        float bestDistSq = 1e9f;
+        int targetPid = -1;
         for (int j = 0; j < MAX_PLAYERS; j++) {
-            if (j == i || !m_lobby[j].active || !m_tanks[j].alive() || m_lobby[j].isBot) continue;
-            float d = std::pow(m_tanks[j].x() - tank.x(), 2) + std::pow(m_tanks[j].y() - tank.y(), 2);
-            if (d < bestD) { bestD = d; target = (uint8_t)j; }
+            if (i == j || !m_lobby[j].active || !m_tanks[j].alive()) continue;
+            float d2 = std::pow(m_tanks[j].x() - tank.x(), 2) + std::pow(m_tanks[j].y() - tank.y(), 2);
+            if (d2 < bestDistSq) { bestDistSq = d2; targetPid = j; }
         }
-        if (target == 0xFF) continue;
 
-        // BFS Pathfinding
+        if (targetPid == -1) continue;
+        auto& target = m_tanks[targetPid];
+
+        // 4. A* PATHFINDING
         int startC = std::clamp((int)(tank.x() / cw), 0, NAV_COLS - 1);
         int startR = std::clamp((int)(tank.y() / ch), 0, NAV_ROWS - 1);
-        int endC = std::clamp((int)(m_tanks[target].x() / cw), 0, NAV_COLS - 1);
-        int endR = std::clamp((int)(m_tanks[target].y() / ch), 0, NAV_ROWS - 1);
+        int endC = std::clamp((int)(target.x() / cw), 0, NAV_COLS - 1);
+        int endR = std::clamp((int)(target.y() / ch), 0, NAV_ROWS - 1);
 
-        struct Node { int r, c; };
-        Node parent[NAV_ROWS][NAV_COLS];
-        for (int r = 0; r < NAV_ROWS; r++) for (int c = 0; c < NAV_COLS; c++) parent[r][c] = { -1, -1 };
+        std::priority_queue<AStarNode, std::vector<AStarNode>, std::greater<AStarNode>> openSet;
+        std::vector<std::vector<float>> gScore(NAV_ROWS, std::vector<float>(NAV_COLS, 1e9f));
+        std::vector<std::vector<std::pair<int, int>>> parent(NAV_ROWS, std::vector<std::pair<int, int>>(NAV_COLS, { -1, -1 }));
 
-        std::queue<Node> q;
-        q.push({ startR, startC });
-        parent[startR][startC] = { startR, startC };
+        gScore[startR][startC] = 0;
+        openSet.push({ startR, startC, 0, (float)(abs(endR - startR) + abs(endC - startC)) });
 
         bool found = false;
-        while (!q.empty()) {
-            Node curr = q.front(); q.pop();
+        while (!openSet.empty()) {
+            AStarNode curr = openSet.top(); openSet.pop();
             if (curr.r == endR && curr.c == endC) { found = true; break; }
-            int dr[] = { -1, 1, 0, 0 }, dc[] = { 0, 0, -1, 1 };
-            for (int k = 0; k < 4; k++) {
+
+            int dr[] = { -1, 1, 0, 0, -1, -1, 1, 1 }, dc[] = { 0, 0, -1, 1, -1, 1, -1, 1 }; // 8-way movement
+            for (int k = 0; k < 8; k++) {
                 int nr = curr.r + dr[k], nc = curr.c + dc[k];
-                if (nr >= 0 && nr < NAV_ROWS && nc >= 0 && nc < NAV_COLS && !blocked[nr][nc] && parent[nr][nc].r == -1) {
-                    parent[nr][nc] = curr;
-                    q.push({ nr, nc });
+                if (nr >= 0 && nr < NAV_ROWS && nc >= 0 && nc < NAV_COLS && !blocked[nr][nc]) {
+                    float moveCost = (k < 4) ? 1.0f : 1.414f; // Diagonal cost
+                    float tentG = gScore[curr.r][curr.c] + moveCost;
+                    if (tentG < gScore[nr][nc]) {
+                        parent[nr][nc] = { curr.r, curr.c };
+                        gScore[nr][nc] = tentG;
+                        openSet.push({ nr, nc, tentG, (float)(abs(endR - nr) + abs(endC - nc)) });
+                    }
                 }
             }
         }
 
-        // Steering Logic
-        float tx = m_tanks[target].x(), ty = m_tanks[target].y();
+        // 5. STEERING
+        float tx = target.x(), ty = target.y();
         if (found && (startR != endR || startC != endC)) {
-            Node step = { endR, endC };
-            while (parent[step.r][step.c].r != startR || parent[step.r][step.c].c != startC) {
-                step = parent[step.r][step.c];
+            std::pair<int, int> step = { endR, endC };
+            while (parent[step.first][step.second].first != startR || parent[step.first][step.second].second != startC) {
+                step = parent[step.first][step.second];
+                if (step.first == -1) break;
             }
-            tx = (step.c + 0.5f) * cw;
-            ty = (step.r + 0.5f) * ch;
+            tx = (step.second + 0.5f) * cw;
+            ty = (step.first + 0.5f) * ch;
         }
 
-        // Reactive Avoidance: If immediate front is blocked, override pathfinding to reverse/turn
-        float rad = tank.angle() * (3.14159f / 180.f);
-        float frontX = tank.x() + std::cos(rad) * 40.0f;
-        float frontY = tank.y() + std::sin(rad) * 40.0f;
+        float angleToNode = std::atan2(ty - tank.y(), tx - tank.x()) * (180.f / 3.14159f);
+        float diff = angleToNode - tank.angle();
+        while (diff > 180) diff -= 360; while (diff < -180) diff += 360;
 
-        if (!isSafe(frontX, frontY)) {
-            inp.back = 1;      // Reverse
-            inp.right = 1;     // Turn to get unstuck
-        }
-        else {
-            float angleToTarget = std::atan2(ty - tank.y(), tx - tank.x()) * 180.f / 3.14159f;
-            float diff = angleToTarget - tank.angle();
-            while (diff > 180) diff -= 360; while (diff < -180) diff += 360;
+        if (std::abs(diff) > 10.f) { if (diff > 0) inp.right = 1; else inp.left = 1; }
+        if (std::abs(diff) < 45.f) inp.forward = 1;
 
-            if (diff > 10.f) inp.right = 1; else if (diff < -10.f) inp.left = 1;
-            if (std::abs(diff) < 45.f) inp.forward = 1;
-        }
-
-        // Firing Logic
-        if (bestD < 600 * 600) {
-            float angleToPlayer = std::atan2(m_tanks[target].y() - tank.y(), m_tanks[target].x() - tank.x()) * 180.f / 3.14159f;
-            float fireDiff = angleToPlayer - tank.angle();
-            while (fireDiff > 180) fireDiff -= 360; while (fireDiff < -180) fireDiff += 360;
-            if (std::abs(fireDiff) < 15.f) inp.fire = 1;
+        // 6. LINE-OF-SIGHT (LOS) Shooting
+        float distToTarget = std::sqrt(bestDistSq);
+        if (distToTarget < 600.f && std::abs(diff) < 20.f) {
+            bool clearShot = true;
+            for (float d = 20.f; d < distToTarget; d += 20.f) {
+                float rx = tank.x() + std::cos(tank.angle() * 3.14159f / 180.f) * d;
+                float ry = tank.y() + std::sin(tank.angle() * 3.14159f / 180.f) * d;
+                for (auto& o : m_obstacles) {
+                    if (rx >= o.x && rx <= o.x + o.w && ry >= o.y && ry <= o.y + o.h) { clearShot = false; break; }
+                }
+                if (!clearShot) break;
+            }
+            if (clearShot) inp.fire = 1;
         }
     }
 }

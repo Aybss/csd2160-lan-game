@@ -19,6 +19,10 @@ set(SOURCES
 )
 
 add_executable(TankNet ${SOURCES})
+# Only hide the console if we are NOT in a Debug build
+if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set_target_properties(TankNet PROPERTIES WIN32_EXECUTABLE TRUE)
+endif()
 target_include_directories(TankNet PRIVATE include)
 target_link_libraries(TankNet PRIVATE
     SFML::Graphics

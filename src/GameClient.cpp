@@ -276,33 +276,57 @@ void GameClient::generateObstacles(uint32_t seed)
 {
     m_obstacles.clear();
     srand(seed);
+
     float cellW = (float)MAP_W / OBS_COLS;
     float cellH = (float)MAP_H / OBS_ROWS;
+    int halfR = OBS_ROWS / 2;
+    int halfC = OBS_COLS / 2;
 
-    for(int r=1;r<OBS_ROWS-1;r++)
-    for(int c=1;c<OBS_COLS-1;c++)
+    for (int r = 1; r < halfR; r++)
     {
-        // Mirror server: keep spawn corners clear
-        if(r<=1 && c<=1) continue;
-        if(r<=1 && c>=OBS_COLS-2) continue;
-        if(r>=OBS_ROWS-2 && c<=1) continue;
-        if(r>=OBS_ROWS-2 && c>=OBS_COLS-2) continue;
+        for (int c = 1; c < halfC; c++)
+        {
+            if (r <= 2 && c <= 2) continue; // Spawn clearance
 
-        int roll = rand()%10;
-        float bw, bh;
-        if(roll < 2)        { bw=80.f+rand()%70; bh=80.f+rand()%70; }  // boulder
-        else if(roll < 4)   { bw=50.f+rand()%50; bh=50.f+rand()%50; }  // wall
-        else if(roll < 9)   { bw=20.f+rand()%25; bh=20.f+rand()%25; }  // tree
-        else continue;                                                    // empty
+            // Slightly higher density (20%) to accommodate trees
+            if (rand() % 100 > 20) continue;
 
-        float bx = c*cellW + (cellW-bw)*0.5f + (rand()%20-10);
-        float by = r*cellH + (cellH-bh)*0.5f + (rand()%20-10);
-        bx = std::max(10.f, std::min((float)MAP_W-bw-10.f, bx));
-        by = std::max(10.f, std::min((float)MAP_H-bh-10.f, by));
-        m_obstacles.push_back({bx,by,bw,bh});
+            int roll = rand() % 10;
+            float bw, bh;
+
+            if (roll < 3) {
+                // 30% Large Pillar (120-180px)
+                bw = 120.f + rand() % 60;
+                bh = 120.f + rand() % 60;
+            }
+            else if (roll < 6) {
+                // 30% Tree (Small & Circular-ish)
+                bw = 35.f + rand() % 15;
+                bh = 35.f + rand() % 15;
+            }
+            else {
+                // 40% Tactical Cover (60-100px)
+                bw = 60.f + rand() % 40;
+                bh = 60.f + rand() % 40;
+            }
+
+            float bx = c * cellW + (cellW - bw) * 0.5f;
+            float by = r * cellH + (cellH - bh) * 0.5f;
+
+            auto addSymmetric = [&](float x, float y, float w, float h) {
+                m_obstacles.push_back({ x, y, w, h });
+                m_obstacles.push_back({ (float)MAP_W - x - w, y, w, h });
+                m_obstacles.push_back({ x, (float)MAP_H - y - h, w, h });
+                m_obstacles.push_back({ (float)MAP_W - x - w, (float)MAP_H - y - h, w, h });
+                };
+
+            addSymmetric(bx, by, bw, bh);
+        }
     }
-}
 
+    // Center Island
+    m_obstacles.push_back({ (MAP_W - 200.f) * 0.5f, (MAP_H - 200.f) * 0.5f, 200.f, 200.f });
+}
 
 // Main loop
 
@@ -828,7 +852,7 @@ void GameClient::drawLobby(sf::RenderWindow& w)
             w.draw(t);
         }
 
-        if (m_isAdmin && sl.isBot) {
+        if (m_isAdmin && (uint8_t)i != m_pid) {
             float xX = 820.f; // Position to the right of the player entry
             float xY = y + 15.f;
             float xSize = 30.f;
@@ -986,137 +1010,62 @@ void GameClient::drawShop(sf::RenderWindow& w)
 
 void GameClient::drawObstacles(sf::RenderWindow& w)
 {
-    // Local LCG - deterministic per obstacle without corrupting global rand state
-    auto lcg = [](unsigned& s) -> unsigned {
-        s = s * 1664525u + 1013904223u;
-        return s;
-    };
-
-    for(auto& o:m_obstacles)
+    for (auto& o : m_obstacles)
     {
-        float cx = o.x + o.w*0.5f;
-        float cy = o.y + o.h*0.5f;
-        float sz = std::max(o.w, o.h);
+        sf::RectangleShape shape({ o.w, o.h });
+        shape.setPosition({ o.x, o.y });
 
-        if(sz > 80.f)
+        // 1. Identify "Trees" (Small, square-ish obstacles)
+        if (o.w < 55.f)
         {
-            //  Boulder 
-            // Base dark grey fill
-            sf::RectangleShape base({o.w,o.h});
-            base.setPosition({o.x,o.y});
-            base.setFillColor(sf::Color(70,70,72));
-            base.setOutlineThickness(2.f);
-            base.setOutlineColor(sf::Color(40,40,42));
-            w.draw(base);
+            // Trunk
+            sf::RectangleShape trunk({ o.w * 0.3f, o.h * 0.3f });
+            trunk.setOrigin({ (o.w * 0.3f) / 2.f, (o.h * 0.3f) / 2.f });
+            trunk.setPosition({ o.x + o.w / 2.f, o.y + o.h / 2.f });
+            trunk.setFillColor(sf::Color(101, 67, 33)); // Brown
 
-            // Irregular blob clusters to fake roundness
-            { unsigned s=(unsigned)(o.x*7+o.y*13);
-            for(int i=0;i<5;i++){
-                float blobR = o.w*0.25f + (float)(lcg(s)%(int)(o.w*0.15f+1));
-                sf::CircleShape blob(blobR);
-                blob.setOrigin({blobR,blobR});
-                blob.setPosition({
-                    o.x + (float)(lcg(s)%(int)(o.w+1)),
-                    o.y + (float)(lcg(s)%(int)(o.h+1))});
-                blob.setFillColor(sf::Color(75+lcg(s)%20, 74+lcg(s)%18, 76+lcg(s)%20));
-                w.draw(blob);
-            }
+            // Foliage (Green Circle)
+            sf::CircleShape leaf(o.w * 0.6f);
+            leaf.setOrigin({ o.w * 0.6f, o.w * 0.6f });
+            leaf.setPosition({ o.x + o.w / 2.f, o.y + o.h / 2.f });
+            leaf.setFillColor(sf::Color(34, 139, 34, 230)); // Forest Green
+            leaf.setOutlineThickness(2.f);
+            leaf.setOutlineColor(sf::Color(20, 60, 20));
 
-            // Crack lines
-            for(int i=0;i<3;i++){
-                sf::RectangleShape crack({o.w*0.3f+(float)(lcg(s)%(int)(o.w*0.2f+1)), 2.f});
-                crack.setFillColor(sf::Color(35,33,35,180));
-                crack.setRotation(sf::degrees((float)(lcg(s)%180)));
-                crack.setPosition({cx - o.w*0.1f, cy - o.h*0.1f});
-                w.draw(crack);
-            }}
-
-            // Highlight top-left
-            sf::RectangleShape hl({o.w*0.6f,4.f});
-            hl.setFillColor(sf::Color(120,118,122,100));
-            hl.setPosition({o.x+6.f,o.y+6.f});
-            w.draw(hl);
-
-            // Moss patches (dark green smudges)
-            { unsigned ms=(unsigned)(o.x*3+o.y*17);
-            for(int i=0;i<3;i++){
-                sf::CircleShape moss(6.f+(float)(lcg(ms)%8));
-                moss.setFillColor(sf::Color(45,72,38,140));
-                moss.setPosition({
-                    o.x+(float)(lcg(ms)%(int)(o.w+1)),
-                    o.y+(float)(lcg(ms)%(int)(o.h+1))});
-                w.draw(moss);
-            }}
+            w.draw(trunk);
+            w.draw(leaf);
         }
-        else if(sz > 50.f)
+        // 2. Identify "Large Boulders" (The Pillar type from generateMap)
+        else if (o.w > 110.f)
         {
-            //  Stone wall 
-            sf::RectangleShape wall({o.w,o.h});
-            wall.setPosition({o.x,o.y});
-            wall.setFillColor(sf::Color(100,92,80));
-            wall.setOutlineThickness(2.f);
-            wall.setOutlineColor(sf::Color(60,55,48));
-            w.draw(wall);
+            shape.setFillColor(sf::Color(90, 95, 100)); // Granite Grey
+            shape.setOutlineThickness(3.f);
+            shape.setOutlineColor(sf::Color(40, 42, 45));
 
-            // Brick rows
-            int brickH = 14;
-            bool offset = false;
-            for(float by=o.y; by<o.y+o.h; by+=brickH){
-                float brickW = 28.f;
-                float startX = offset ? o.x-brickW*0.5f : o.x;
-                for(float bx=startX; bx<o.x+o.w; bx+=brickW){
-                    sf::RectangleShape brick({brickW-2.f,(float)brickH-2.f});
-                    brick.setPosition({bx+1.f,by+1.f});
-                    { unsigned bs2=(unsigned)(bx*3+by*7);
-                    brick.setFillColor(sf::Color(
-                        95+lcg(bs2)%20, 86+lcg(bs2)%18, 74+lcg(bs2)%16)); }
-                    brick.setOutlineThickness(1.f);
-                    brick.setOutlineColor(sf::Color(55,50,44));
-                    w.draw(brick);
-                }
-                offset = !offset;
-            }
+            // Add a "highlight" for a rock-like depth
+            sf::RectangleShape detail({ o.w - 10.f, o.h - 10.f });
+            detail.setPosition({ o.x + 5.f, o.y + 5.f });
+            detail.setFillColor(sf::Color(110, 115, 120, 100));
 
-            // Top highlight
-            sf::RectangleShape hl({o.w,3.f});
-            hl.setFillColor(sf::Color(150,140,125,80));
-            hl.setPosition({o.x,o.y});
-            w.draw(hl);
+            w.draw(shape);
+            w.draw(detail);
         }
+        // 3. Identify "Brick Walls / Tactical Cover" (Medium rectangles)
         else
         {
-            //  Tree / bush 
-            // Brown trunk
-            float trunkW = o.w*0.25f;
-            float trunkH = o.h*0.4f;
-            sf::RectangleShape trunk({trunkW,trunkH});
-            trunk.setOrigin({trunkW*0.5f,0.f});
-            trunk.setPosition({cx, o.y+o.h-trunkH});
-            trunk.setFillColor(sf::Color(90,60,30));
-            w.draw(trunk);
+            shape.setFillColor(sf::Color(140, 70, 50)); // Brick Red
+            shape.setOutlineThickness(2.f);
+            shape.setOutlineColor(sf::Color(80, 30, 20));
 
-            // Layered foliage circles (dark green)
-            { unsigned ts=(unsigned)(o.x*11+o.y*7);
-            float leafR = o.w*0.5f;
-            for(int layer=0;layer<3;layer++){
-                float lr = leafR*(1.f-layer*0.15f);
-                sf::CircleShape leaf(lr);
-                leaf.setOrigin({lr,lr});
-                leaf.setPosition({
-                    cx+(float)(lcg(ts)%8)-4.f,
-                    o.y+o.h*0.45f-(float)layer*6.f});
-                leaf.setFillColor(sf::Color(
-                    30+lcg(ts)%20,
-                    80+lcg(ts)%40,
-                    25+lcg(ts)%20));
-                w.draw(leaf);
-            }}
+            w.draw(shape);
 
-            // Highlight dot on top foliage
-            sf::CircleShape shine(4.f);
-            shine.setFillColor(sf::Color(120,200,80,100));
-            shine.setPosition({cx-6.f, o.y+4.f});
-            w.draw(shine);
+            // Draw simple "Brick" lines
+            sf::RectangleShape line({ o.w, 2.f });
+            line.setFillColor(sf::Color(100, 50, 40, 150));
+            for (float ly = 10.f; ly < o.h; ly += 15.f) {
+                line.setPosition({ o.x, o.y + ly });
+                w.draw(line);
+            }
         }
     }
 }

@@ -44,6 +44,15 @@ private:
     };
     std::array<BotState, MAX_PLAYERS> m_bots{};
 
+    // A*
+    struct AStarNode {
+        int r, c;
+        float gCost; // Distance from start
+        float hCost; // Heuristic (distance to target)
+        float fCost() const { return gCost + hCost; }
+        bool operator>(const AStarNode& other) const { return fCost() > other.fCost(); }
+    };
+
     // Match
     std::array<uint8_t, MAX_PLAYERS> m_roundWins{};
     std::array<Tank,    MAX_PLAYERS> m_tanks{};

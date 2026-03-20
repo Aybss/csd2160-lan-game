@@ -8,6 +8,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#include <windows.h>
 #include <SFML/Graphics.hpp>
 #include <thread>
 #include <atomic>
@@ -22,9 +23,9 @@
 #include "Network.h"
 #include "Common.h"
 
-// ============================================================
+
 // Global font
-// ============================================================
+
 static sf::Font g_font;
 static bool     g_fontLoaded = false;
 
@@ -40,9 +41,9 @@ static void loadFont()
         if (g_font.openFromFile(p)) { g_fontLoaded = true; break; }
 }
 
-// ============================================================
+
 // Layout constants & palette
-// ============================================================
+
 static constexpr int MW = 780;
 static constexpr int MH = 580;
 
@@ -56,9 +57,9 @@ static const sf::Color ERR_COL   {255,  80,  80, 255};
 static const sf::Color PANEL_BRD {35,   45,  65, 255};
 static const sf::Color GOLD_COL  {230, 180,  40, 255};
 
-// ============================================================
+
 // Draw helpers
-// ============================================================
+
 static sf::Text mkT(const std::string& s, unsigned sz,
                     sf::Color col = {200,210,225,255})
 {
@@ -158,9 +159,9 @@ static void drawTitleBar(sf::RenderWindow& w, float y = 38.f)
     ln.setFillColor(ACCENT); ln.setPosition({tx, y + 72.f}); w.draw(ln);
 }
 
-// ============================================================
+
 // Screen 1 – Username entry
-// ============================================================
+
 static std::string screenUsername(sf::RenderWindow& w)
 {
     std::string name;
@@ -268,9 +269,9 @@ static std::string screenUsername(sf::RenderWindow& w)
     return "";
 }
 
-// ============================================================
+
 // Screen 2 – Create or Join
-// ============================================================
+
 enum class MenuChoice { NONE, CREATE, JOIN };
 
 static MenuChoice screenMainMenu(sf::RenderWindow& w, const std::string& username)
@@ -353,9 +354,9 @@ static MenuChoice screenMainMenu(sf::RenderWindow& w, const std::string& usernam
     return MenuChoice::NONE;
 }
 
-// ============================================================
+
 // Screen 3 – LAN Server Browser
-// ============================================================
+
 static std::pair<std::string,uint16_t>
 screenBrowser(sf::RenderWindow& w, const std::string& /*username*/)
 {
@@ -574,11 +575,10 @@ screenBrowser(sf::RenderWindow& w, const std::string& /*username*/)
     return {"",0};
 }
 
-// ============================================================
+
 // main
-// ============================================================
-int main(int /*argc*/, char* /*argv*/[])
-{
+//int main(int argc, char* argv[]){
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd){
     loadFont();
 
     // Ask username once — persists across reconnects
