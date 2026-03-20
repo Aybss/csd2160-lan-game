@@ -11,7 +11,7 @@ Free-for-all: last tank standing wins rounds. First to 3 round wins takes the ma
 |---|---|
 | Visual Studio 2022 | "Desktop development with C++" workload |
 | CMake 3.20+ | `winget install Kitware.CMake` |
-| vcpkg | See below |
+| vcpkg | Required for **Opus** (Voice) and **SFML 3** dependencies |
 
 ---
 
@@ -23,25 +23,9 @@ run setup.bat
 ## 2 – Running
 
 ### Same machine (testing)
-```
-cd build/Release
-run.bat
-```
-Opens one server window and two client windows automatically.
+Open at least 2 terminal windows. One can run the server, the others can join.
+Otherwise, can start the game with just 1 player, and add bots in the lobby.
 
-### LAN (different machines)
-**Server machine:**
-```
-TankNet.exe server
-```
-
-**Client machines** - edit `server.cfg`, set `SERVER_IP` to the server's LAN IP, then:
-```
-TankNet.exe client YourName
-```
-Or pass everything on command line:
-```
-TankNet.exe client YourName 192.168.1.42
 ```
 
 ---
@@ -58,17 +42,19 @@ TankNet.exe client YourName 192.168.1.42
 | Enter | Open / send chat |
 | Esc | Close chat / back |
 | V | Toggle voice chat |
+| P | Add bot (admin only) |
 
 ---
 
 ## Game Flow
 
-1. Players connect - **Lobby** screen shows all players, their level and win count
-2. Each player presses **R** to ready up
-3. Once all players are ready (minimum 2), game starts automatically
-4. **Round**: last tank standing wins the round. First to **3 round wins** wins the match
-5. **Match Over** screen shows kills, XP/coins gained, and the **global leaderboard**
-6. Server returns to lobby; player data persists in `players.json`
+1. Enter username, join or create game. 
+2. Players connect - **Lobby** screen shows all players, their level and win count, host is able to add and kick bots/players.
+3. Each player presses **R** to ready up
+4. Once all players are ready (minimum 2), game starts automatically
+5. **Round**: last tank standing wins the round. First to **3 round wins** wins the match
+6. **Match Over** screen shows kills, XP/coins gained, and the **global leaderboard**
+7. Server returns to lobby, with player data still persisting in `players.json`
 
 ---
 
