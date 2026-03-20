@@ -30,9 +30,19 @@ private:
         char    name[16]{};
         bool    ready  = false;
         uint8_t skin   = 0;
+        bool    isBot  = false;
     };
     std::array<LobbyPlayer, MAX_PLAYERS> m_lobby{};
-    uint8_t m_hostPid = 0;
+    uint8_t m_hostPid = 0xFF;   // 0xFF = no host yet
+
+    // ── Bot AI state ──────────────────────────────────────────────────────
+    struct BotState {
+        bool    active    = false;
+        float   thinkTimer = 0.f;   // seconds until next decision
+        uint8_t targetPid  = 0xFF;  // which player to chase
+        float   aimAngle   = 0.f;   // desired heading
+    };
+    std::array<BotState, MAX_PLAYERS> m_bots{};
 
     // Match
     std::array<uint8_t, MAX_PLAYERS> m_roundWins{};
@@ -62,6 +72,10 @@ private:
     void handleBuySkin(const PktBuySkin& p);
     void handleDisconnect(uint8_t pid);
     void handleVoice(const Envelope& e);
+    void handleAddBot(const PktAddBot& p);
+
+    void promoteNextHost();          // reassign hostPid after host leaves
+    void updateBots(float dt);       // simple AI tick
 
     void broadcastLobbyState();
     bool allReady() const;

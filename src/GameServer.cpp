@@ -86,7 +86,7 @@ void GameServer::run()
     }
 }
 
-//  Packet dispatch 
+// ── Packet dispatch ───────────────────────────────────────────────────────────
 void GameServer::handlePacket(const Envelope& e)
 {
     if(e.len < 1) return;
@@ -107,6 +107,8 @@ void GameServer::handlePacket(const Envelope& e)
         case PktType::PING:          { PktType pong=PktType::PONG_PKT; m_net.sendTo(e.buf[1],&pong,1); } break;
         case PktType::VOICE_DATA:    handleVoice(e); break;
         case PktType::SERVER_QUERY:  announcePresence(&e.from); break;
+        case PktType::ADD_BOT:       if(e.len>=(int)sizeof(PktAddBot)){
+            PktAddBot p; memcpy(&p,e.buf,sizeof(p)); handleAddBot(p); } break;
         default: break;
     }
 }
@@ -144,6 +146,10 @@ void GameServer::handleConnect(const Envelope& e)
     m_lobby[pid].active=true;
     strncpy(m_lobby[pid].name, p.name, 15);
     m_lobby[pid].ready=false;
+    m_lobby[pid].isBot=false;
+
+    // First player to connect becomes host/admin
+    if(m_hostPid==0xFF) m_hostPid=pid;
 
     // Load/create profile
     auto& rec = m_db.getOrCreate(p.name);
@@ -165,8 +171,10 @@ void GameServer::handlePlayerReady(const PktPlayerReady& p, uint8_t /*pid*/)
     m_lobby[p.pid].skin   = p.skin;
     broadcastLobbyState();
 
-    // Host auto-starts when all ready and >= MIN_PLAYERS
-    if(allReady() && m_net.clientCount() >= MIN_PLAYERS)
+    // Count total active slots (real players + bots) for minimum player check
+    int totalActive = 0;
+    for(int i=0;i<MAX_PLAYERS;i++) if(m_lobby[i].active) totalActive++;
+    if(allReady() && totalActive >= MIN_PLAYERS)
         startGame();
 }
 
@@ -202,8 +210,10 @@ void GameServer::handleBuySkin(const PktBuySkin& p)
 void GameServer::handleDisconnect(uint8_t pid)
 {
     if(pid>=MAX_PLAYERS) return;
+    bool wasHost = (pid == m_hostPid);
     m_lobby[pid].active=false;
     m_lobby[pid].ready=false;
+    m_bots[pid].active=false;
 
     PktDisconnect d; d.pid=pid;
     m_net.broadcastExcept(pid,&d,sizeof(d));
@@ -213,11 +223,12 @@ void GameServer::handleDisconnect(uint8_t pid)
         m_tanks[pid].takeDamage(999); // kill their tank
         checkRoundEnd();
     }
+    if(wasHost) promoteNextHost();
     broadcastLobbyState();
     std::cout<<"[Server] pid "<<(int)pid<<" disconnected\n";
 }
 
-//  Lobby 
+// ── Lobby ─────────────────────────────────────────────────────────────────────
 void GameServer::broadcastLobbyState()
 {
     PktLobbyState ls;
@@ -228,7 +239,8 @@ void GameServer::broadcastLobbyState()
         strncpy(ls.slots[i].name, m_lobby[i].name, 15);
         ls.slots[i].ready  = m_lobby[i].ready;
         ls.slots[i].skin   = m_lobby[i].skin;
-        if(m_lobby[i].active){
+        ls.slots[i].isBot  = m_lobby[i].isBot ? 1 : 0;
+        if(m_lobby[i].active && !m_lobby[i].isBot){
             auto& r = m_db.getOrCreate(m_lobby[i].name);
             ls.slots[i].level = r.level;
             ls.slots[i].wins  = r.totalWins;
@@ -240,7 +252,8 @@ void GameServer::broadcastLobbyState()
 bool GameServer::allReady() const
 {
     int cnt=0;
-    for(int i=0;i<MAX_PLAYERS;i++) if(m_lobby[i].active){ if(!m_lobby[i].ready) return false; cnt++; }
+    for(int i=0;i<MAX_PLAYERS;i++)
+        if(m_lobby[i].active){ if(!m_lobby[i].ready) return false; cnt++; }
     return cnt>=MIN_PLAYERS;
 }
 
@@ -249,31 +262,43 @@ void GameServer::startGame()
     m_phase = ServerPhase::IN_GAME;
     m_mapSeed = (uint32_t)time(nullptr);
     generateMap(m_mapSeed);
-
-    // Zero round wins
     m_roundWins.fill(0);
-
-    // resetRound handles PktGameStart broadcast + immediate state broadcast
     resetRound();
     std::cout<<"[Server] Game started! Seed="<<m_mapSeed<<"\n";
 }
 
-//  Game 
+// ── Game ──────────────────────────────────────────────────────────────────────
 void GameServer::generateMap(uint32_t seed)
 {
     m_obstacles.clear();
     srand(seed);
-    // Fixed border walls are implicit; generate interior boxes
     float cellW = (float)MAP_W / OBS_COLS;
     float cellH = (float)MAP_H / OBS_ROWS;
+
     for(int r=1;r<OBS_ROWS-1;r++)
     for(int c=1;c<OBS_COLS-1;c++)
     {
-        if(rand()%3 != 0) continue;
-        float bw = 40.f + rand()%60;
-        float bh = 40.f + rand()%60;
-        float bx = c*cellW + (cellW-bw)/2.f;
-        float by = r*cellH + (cellH-bh)/2.f;
+        // Keep spawn corners clear (first and last 2 cells in each corner)
+        if(r<=1 && c<=1) continue;
+        if(r<=1 && c>=OBS_COLS-2) continue;
+        if(r>=OBS_ROWS-2 && c<=1) continue;
+        if(r>=OBS_ROWS-2 && c>=OBS_COLS-2) continue;
+
+        // Decide what to put here — bias heavily toward small (trees/bushes)
+        int roll = rand()%10;
+        float bw, bh;
+        if(roll < 2)          // 20% large boulder
+        { bw=80.f+rand()%70; bh=80.f+rand()%70; }
+        else if(roll < 4)     // 20% medium wall
+        { bw=50.f+rand()%50; bh=50.f+rand()%50; }
+        else if(roll < 9)     // 50% small tree/bush (was previously ~33%)
+        { bw=20.f+rand()%25; bh=20.f+rand()%25; }
+        else continue;        // 10% empty cell
+
+        float bx = c*cellW + (cellW-bw)*0.5f + (rand()%20-10);
+        float by = r*cellH + (cellH-bh)*0.5f + (rand()%20-10);
+        bx = std::max(10.f, std::min((float)MAP_W-bw-10.f, bx));
+        by = std::max(10.f, std::min((float)MAP_H-bh-10.f, by));
         m_obstacles.push_back({bx,by,bw,bh});
     }
 }
@@ -367,6 +392,9 @@ void GameServer::checkPowerupCollisions()
 
 void GameServer::updateGame(float dt)
 {
+    // Run bot AI to fill m_inputs for bot slots
+    updateBots(dt);
+
     // Apply inputs
     for(int i=0;i<MAX_PLAYERS;i++)
     {
@@ -703,5 +731,142 @@ void GameServer::announcePresence(const sockaddr_in* replyTo)
         dest.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         sendto(bsock, (const char*)&ann, sizeof(ann), 0,
                (sockaddr*)&dest, sizeof(dest));
+    }
+}
+
+// ── Host promotion ──────────────────────────────────────────────────────────
+void GameServer::promoteNextHost()
+{
+    m_hostPid = 0xFF;
+    // Find the active non-bot player with the lowest pid
+    for(int i=0;i<MAX_PLAYERS;i++){
+        if(m_lobby[i].active && !m_lobby[i].isBot){
+            m_hostPid = (uint8_t)i;
+            std::cout<<"[Server] New host: pid "<<i<<" ("<<m_lobby[i].name<<")\n";
+            return;
+        }
+    }
+    std::cout<<"[Server] No players left; no host.\n";
+}
+
+// ── Add bot ──────────────────────────────────────────────────────────────────
+void GameServer::handleAddBot(const PktAddBot& p)
+{
+    // Only the current host/admin may add bots, and only in lobby
+    if(p.requestPid != m_hostPid) return;
+    if(m_phase != ServerPhase::LOBBY) return;
+
+    // Find a free slot
+    int slot = -1;
+    for(int i=0;i<MAX_PLAYERS;i++)
+        if(!m_lobby[i].active){ slot=i; break; }
+    if(slot<0) return;  // full
+
+    // Register a fake "client" with no real address — bots don't need network I/O
+    // We give them a sentinel address so the network layer won't try to send to them
+    sockaddr_in fakeAddr{};
+    fakeAddr.sin_family = AF_INET;
+    fakeAddr.sin_port   = 0;
+    fakeAddr.sin_addr.s_addr = 0;
+
+    // Directly fill the lobby slot (bypass network registration)
+    uint8_t pid = (uint8_t)slot;
+    char botName[16];
+    snprintf(botName, sizeof(botName), "Bot-%d", slot);
+
+    m_lobby[pid].active = true;
+    strncpy(m_lobby[pid].name, botName, 15);
+    m_lobby[pid].ready  = true;   // bots are always ready
+    m_lobby[pid].skin   = (uint8_t)(slot % SKIN_COUNT);
+    m_lobby[pid].isBot  = true;
+
+    m_bots[pid].active     = true;
+    m_bots[pid].thinkTimer = 0.f;
+    m_bots[pid].targetPid  = 0xFF;
+    m_bots[pid].aimAngle   = 0.f;
+
+    std::cout<<"[Server] Bot added as pid "<<(int)pid<<" ("<<botName<<")\n";
+    broadcastLobbyState();
+}
+
+// ── Bot AI ───────────────────────────────────────────────────────────────────
+// Simple seek-and-shoot FSM: find nearest living enemy, turn toward them, shoot.
+void GameServer::updateBots(float dt)
+{
+    if(m_phase != ServerPhase::IN_GAME) return;
+
+    for(int i=0;i<MAX_PLAYERS;i++)
+    {
+        if(!m_bots[i].active) continue;
+        if(!m_lobby[i].active || !m_tanks[i].alive()) continue;
+
+        auto& bot = m_bots[i];
+        auto& tank = m_tanks[i];
+        auto& inp  = m_inputs[i];
+
+        // Re-pick target every ~0.6 seconds or if current target is dead
+        bot.thinkTimer -= dt;
+        bool retarget = bot.thinkTimer <= 0.f;
+        if(bot.targetPid < MAX_PLAYERS &&
+           (!m_lobby[bot.targetPid].active || !m_tanks[bot.targetPid].alive()))
+            retarget = true;
+
+        if(retarget)
+        {
+            bot.thinkTimer = 0.4f + (float)(rand()%4)*0.1f;  // 0.4–0.7s
+            float bestDist = 1e9f;
+            bot.targetPid  = 0xFF;
+            for(int j=0;j<MAX_PLAYERS;j++)
+            {
+                if(j==i) continue;
+                if(!m_lobby[j].active || !m_tanks[j].alive()) continue;
+                if(m_lobby[j].isBot) continue;   // don't target other bots
+                float dx = m_tanks[j].x()-tank.x();
+                float dy = m_tanks[j].y()-tank.y();
+                float d  = dx*dx+dy*dy;
+                if(d<bestDist){ bestDist=d; bot.targetPid=(uint8_t)j; }
+            }
+        }
+
+        // Clear inputs each tick
+        inp = PktInput{};
+        inp.pid = (uint8_t)i;
+        inp.seq++;
+
+        if(bot.targetPid == 0xFF) continue;  // no live target
+
+        auto& tgt = m_tanks[bot.targetPid];
+        float dx  = tgt.x() - tank.x();
+        float dy  = tgt.y() - tank.y();
+        float dist = sqrtf(dx*dx+dy*dy);
+
+        // Desired angle toward target
+        float desiredAngle = atan2f(dy, dx) * 180.f / 3.14159265f;
+        float currentAngle = tank.angle();
+
+        // Normalize angle difference to [-180, 180]
+        float angleDiff = desiredAngle - currentAngle;
+        while(angleDiff >  180.f) angleDiff -= 360.f;
+        while(angleDiff < -180.f) angleDiff += 360.f;
+
+        // Turn toward target
+        if(angleDiff >  8.f)       inp.right = 1;
+        else if(angleDiff < -8.f)  inp.left  = 1;
+
+        // Move: advance if far, back off if too close (avoid running into target)
+        if(dist > 200.f)       inp.forward = 1;
+        else if(dist < 80.f)   inp.back    = 1;
+
+        // Shoot when roughly aimed and within range
+        if(fabsf(angleDiff) < 20.f && dist < 600.f)
+            inp.fire = 1;
+
+        // Simple obstacle avoidance: if very close to a wall edge, turn
+        if(tank.x() < 80.f || tank.x() > MAP_W-80.f ||
+           tank.y() < 80.f || tank.y() > MAP_H-80.f)
+        {
+            inp.right   = 1;
+            inp.forward = 1;
+        }
     }
 }

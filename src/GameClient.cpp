@@ -10,7 +10,7 @@
 
 static constexpr float DEG2RAD = 3.14159265f / 180.f;
 
-//  Skin base colours (used as fallback and for HUD tints) 
+// ── Skin base colours (used as fallback and for HUD tints) ──────────────────
 static const sf::Color SKIN_COLORS[SKIN_COUNT] = {
     sf::Color(80,160,80),     // 0 Army
     sf::Color(110,90,60),     // 1 Camo
@@ -119,7 +119,7 @@ void GameClient::generateSkinTextures()
 
     for(int s=0;s<SKIN_COUNT;s++)
     {
-        //  Body texture 
+        // ── Body texture ──────────────────────────────────────────────────
         m_skinBodyRT[s].resize({TW,TH});
         m_skinBodyRT[s].clear(sf::Color::Transparent);
 
@@ -242,7 +242,7 @@ void GameClient::generateSkinTextures()
         m_skinBodyRT[s].display();
         m_skinBodyTex[s] = m_skinBodyRT[s].getTexture();
 
-        //  Turret texture 
+        // ── Turret texture ────────────────────────────────────────────────
         m_skinTurretRT[s].resize({BW,BH});
         m_skinTurretRT[s].clear(sf::Color::Transparent);
 
@@ -278,12 +278,27 @@ void GameClient::generateObstacles(uint32_t seed)
     srand(seed);
     float cellW = (float)MAP_W / OBS_COLS;
     float cellH = (float)MAP_H / OBS_ROWS;
+
     for(int r=1;r<OBS_ROWS-1;r++)
     for(int c=1;c<OBS_COLS-1;c++)
     {
-        if(rand()%3 != 0) continue;
-        float bw=40.f+rand()%60, bh=40.f+rand()%60;
-        float bx=c*cellW+(cellW-bw)/2.f, by=r*cellH+(cellH-bh)/2.f;
+        // Mirror server: keep spawn corners clear
+        if(r<=1 && c<=1) continue;
+        if(r<=1 && c>=OBS_COLS-2) continue;
+        if(r>=OBS_ROWS-2 && c<=1) continue;
+        if(r>=OBS_ROWS-2 && c>=OBS_COLS-2) continue;
+
+        int roll = rand()%10;
+        float bw, bh;
+        if(roll < 2)        { bw=80.f+rand()%70; bh=80.f+rand()%70; }  // boulder
+        else if(roll < 4)   { bw=50.f+rand()%50; bh=50.f+rand()%50; }  // wall
+        else if(roll < 9)   { bw=20.f+rand()%25; bh=20.f+rand()%25; }  // tree
+        else continue;                                                    // empty
+
+        float bx = c*cellW + (cellW-bw)*0.5f + (rand()%20-10);
+        float by = r*cellH + (cellH-bh)*0.5f + (rand()%20-10);
+        bx = std::max(10.f, std::min((float)MAP_W-bw-10.f, bx));
+        by = std::max(10.f, std::min((float)MAP_H-bh-10.f, by));
         m_obstacles.push_back({bx,by,bw,bh});
     }
 }
@@ -441,11 +456,12 @@ void GameClient::processPackets()
             case PktType::LOBBY_STATE:
                 if(e.len>=(int)sizeof(PktLobbyState)){
                     memcpy(&m_lobby,e.buf,sizeof(m_lobby));
+                    m_isAdmin = (m_lobby.hostPid == m_pid);
                     // Server sent lobby state = we are back in lobby
                     if(m_phase==ClientPhase::MATCH_OVER || m_phase==ClientPhase::ROUND_OVER)
                     {
                         m_phase  = ClientPhase::LOBBY;
-                        m_ready  = false;  // reset ready flag for next match
+                        m_ready  = false;
                         memset(m_roundWins, 0, sizeof(m_roundWins));
                     }
                 }
@@ -615,10 +631,10 @@ void GameClient::updateLobby(sf::RenderWindow& w)
 {
     static bool rHeld=false;
     static bool sHeld=false;
+    static bool pHeld=false;
 
     if(m_chatActive || m_pauseOpen){
-        rHeld = true;
-        sHeld = true;
+        rHeld = true; sHeld = true; pHeld = true;
         (void)w; return;
     }
 
@@ -631,10 +647,19 @@ void GameClient::updateLobby(sf::RenderWindow& w)
     }
     rHeld=rDown;
 
-    // O = open shop
-    bool sDown = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::O);
+    // B = open shop (was O)
+    bool sDown = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::B);
     if(sDown && !sHeld) m_phase=ClientPhase::SHOP;
     sHeld=sDown;
+
+    // P = add bot (admin only)
+    bool pDown = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::P);
+    if(pDown && !pHeld && m_isAdmin)
+    {
+        PktAddBot ab; ab.requestPid=m_pid;
+        m_net.send(&ab, sizeof(ab));
+    }
+    pHeld=pDown;
     (void)w;
 }
 
@@ -643,7 +668,7 @@ void GameClient::drawLobby(sf::RenderWindow& w)
     if(!m_fontLoaded) return;
 
     // Title
-    //  3D camo title 
+    // ── 3D camo title ─────────────────────────────────────────────────────
     {
         const std::string titleStr = "TANK NET";
         const unsigned fontSize = 52;
@@ -740,16 +765,33 @@ void GameClient::drawLobby(sf::RenderWindow& w)
         std::string line = std::string(sl.name) +
             "  Lv." + std::to_string(sl.level) +
             "  Wins:" + std::to_string(sl.wins) +
-            (sl.ready ? "  [READY]" : "");
-        auto t = makeText(line, 22, i==(int)m_pid ? sf::Color::Cyan : sf::Color::White);
-        t.setPosition({220.f, y+16.f});
-        w.draw(t);
+            (sl.ready ? "  [READY]" : "") +
+            (sl.isBot ? "  [BOT]" : "");
+        // Crown icon for admin
+        sf::Color nameCol = i==(int)m_pid ? sf::Color::Cyan : sf::Color::White;
+        if((int)i == (int)m_lobby.hostPid)
+        {
+            auto crown = makeText("[HOST] ", 18, sf::Color(255,215,0));
+            crown.setPosition({220.f, y+18.f});
+            w.draw(crown);
+            auto crownB = crown.getLocalBounds();
+            auto t = makeText(line, 22, nameCol);
+            t.setPosition({220.f + crownB.size.x + 2.f, y+16.f});
+            w.draw(t);
+        }
+        else
+        {
+            auto t = makeText(line, 22, nameCol);
+            t.setPosition({220.f, y+16.f});
+            w.draw(t);
+        }
     }
 
     // Controls hint
-    std::string lobbyHint = "[R] Ready  [O] Shop  [Enter] Chat  [Esc] Menu  [V] Voice";
+    std::string lobbyHint = "[R] Ready  [B] Shop  [Enter] Chat  [Esc] Menu  [V] Voice";
+    if(m_isAdmin) lobbyHint += "  [P] Add Bot";
     if(m_voice.isTalking()) lobbyHint += "  [MIC ON]";
-    auto hint = makeText(lobbyHint, 18, m_voice.isTalking() ? sf::Color(100,255,100) : sf::Color(160,160,160));
+    auto hint = makeText(lobbyHint, 16, m_voice.isTalking() ? sf::Color(100,255,100) : sf::Color(160,160,160));
     hint.setPosition({160.f, WIN_H-60.f});
     w.draw(hint);
 
@@ -887,7 +929,7 @@ void GameClient::drawObstacles(sf::RenderWindow& w)
 
         if(sz > 80.f)
         {
-            //  Boulder 
+            // ── Boulder ───────────────────────────────────────────────────
             // Base dark grey fill
             sf::RectangleShape base({o.w,o.h});
             base.setPosition({o.x,o.y});
@@ -937,7 +979,7 @@ void GameClient::drawObstacles(sf::RenderWindow& w)
         }
         else if(sz > 50.f)
         {
-            //  Stone wall 
+            // ── Stone wall ────────────────────────────────────────────────
             sf::RectangleShape wall({o.w,o.h});
             wall.setPosition({o.x,o.y});
             wall.setFillColor(sf::Color(100,92,80));
@@ -972,7 +1014,7 @@ void GameClient::drawObstacles(sf::RenderWindow& w)
         }
         else
         {
-            //  Tree / bush 
+            // ── Tree / bush ───────────────────────────────────────────────
             // Brown trunk
             float trunkW = o.w*0.25f;
             float trunkH = o.h*0.4f;
@@ -1017,7 +1059,7 @@ void GameClient::drawTank(sf::RenderWindow& w, const PlayerState& ps, uint8_t pi
 
     if(m_texturesGenerated)
     {
-        //  Textured body 
+        // ── Textured body ─────────────────────────────────────────────────
         sf::Sprite body(m_skinBodyTex[skin]);
         auto tb = m_skinBodyTex[skin].getSize();
         body.setOrigin({tb.x/2.f, tb.y/2.f});
@@ -1028,7 +1070,7 @@ void GameClient::drawTank(sf::RenderWindow& w, const PlayerState& ps, uint8_t pi
         body.setScale({scaleX, scaleY});
         w.draw(body);
 
-        //  Barrel(s): double barrel for rapid-fire buff 
+        // ── Barrel(s): double barrel for rapid-fire buff ───────────────────
         uint8_t buffsEarly = (pid < MAX_PLAYERS) ? m_gameState.buffs[pid] : 0;
         bool rapidFire = (buffsEarly & 0x02) != 0;
 
@@ -1344,35 +1386,106 @@ void GameClient::drawChat(sf::RenderWindow& w)
 
 void GameClient::drawInGame(sf::RenderWindow& w)
 {
-    drawBackground(w);
+    // Determine whether we are alive or dead
+    bool localAlive = false;
+    if(m_pid < MAX_PLAYERS && m_lobby.slots[m_pid].active)
+        localAlive = m_gameState.players[m_pid].alive;
 
-    // Push a view that offsets all game-world draws into the playfield rect
-    sf::View gameView(sf::FloatRect(
-        {0.f, 0.f}, {(float)MAP_W, (float)MAP_H}));
-    gameView.setViewport(sf::FloatRect(
-        {(float)MAP_OFFSET_X / WIN_W, (float)MAP_OFFSET_Y / WIN_H},
-        {(float)MAP_W / WIN_W,        (float)MAP_H / WIN_H}));
-    w.setView(gameView);
+    if(localAlive)
+    {
+        // ── Follow-cam: centered on our tank, zoomed in ────────────────────
+        auto& ps  = m_gameState.players[m_pid];
+        float camX = ps.x;
+        float camY = ps.y;
 
-    drawObstacles(w);
-    for(int i=0;i<MAX_BARRELS;i++)    drawBarrel(w,m_gameState.barrels[i]);
-    for(auto& p:m_gameState.powerups) drawPowerup(w,p);
-    for(int i=0;i<MAX_PLAYERS;i++)    drawTank(w,m_gameState.players[i],(uint8_t)i);
-    for(auto& b:m_gameState.bullets)  drawBullet(w,b);
-    drawExplosions(w);
+        const float ZOOM  = 0.55f;
+        const float halfW = WIN_W * 0.5f * ZOOM;
+        const float halfH = WIN_H * 0.5f * ZOOM;
+        camX = std::max(halfW,  std::min((float)MAP_W - halfW,  camX));
+        camY = std::max(halfH,  std::min((float)MAP_H - halfH,  camY));
 
-    // Restore default view for HUD/border/chat (pixel-perfect overlay)
-    w.setView(w.getDefaultView());
-    drawBorder(w);
+        sf::View gameView(sf::Vector2f(camX, camY),
+                          sf::Vector2f((float)WIN_W * ZOOM, (float)WIN_H * ZOOM));
+        w.setView(gameView);
+
+        drawBackground(w);
+        drawObstacles(w);
+        for(int i=0;i<MAX_BARRELS;i++)    drawBarrel(w,m_gameState.barrels[i]);
+        for(auto& p:m_gameState.powerups) drawPowerup(w,p);
+        for(int i=0;i<MAX_PLAYERS;i++)    drawTank(w,m_gameState.players[i],(uint8_t)i);
+        for(auto& b:m_gameState.bullets)  drawBullet(w,b);
+        drawExplosions(w);
+        drawBorder(w);
+
+        w.setView(w.getDefaultView());
+    }
+    else
+    {
+        // ── Spectator view: full map visible, bordered like before ─────────
+        // Fit the whole map inside the window with a fixed margin for the border
+        const float MARGIN  = 40.f;   // screen-space margin on each side
+        const float availW  = WIN_W - MARGIN * 2.f;
+        const float availH  = WIN_H - MARGIN * 2.f;
+        float scaleToFit    = std::min(availW / MAP_W, availH / MAP_H);
+        float viewW         = WIN_W / scaleToFit;   // world units visible
+        float viewH         = WIN_H / scaleToFit;
+
+        sf::View spectView(sf::Vector2f((float)MAP_W*0.5f, (float)MAP_H*0.5f),
+                           sf::Vector2f(viewW, viewH));
+        w.setView(spectView);
+
+        drawBackground(w);
+        drawObstacles(w);
+        for(int i=0;i<MAX_BARRELS;i++)    drawBarrel(w,m_gameState.barrels[i]);
+        for(auto& p:m_gameState.powerups) drawPowerup(w,p);
+        for(int i=0;i<MAX_PLAYERS;i++)    drawTank(w,m_gameState.players[i],(uint8_t)i);
+        for(auto& b:m_gameState.bullets)  drawBullet(w,b);
+        drawExplosions(w);
+        drawBorder(w);
+
+        // Back to screen space for the overlay border and text
+        w.setView(w.getDefaultView());
+
+        // Draw the screen-space armoured border frame (like the original fixed border)
+        drawScreenBorder(w, MARGIN);
+
+        // DEAD / SPECTATING overlay text
+        if(m_fontLoaded)
+        {
+            // Semi-transparent banner at the top of the map area
+            sf::RectangleShape banner({WIN_W - MARGIN*2.f, 44.f});
+            banner.setPosition({MARGIN, MARGIN});
+            banner.setFillColor(sf::Color(0,0,0,140));
+            w.draw(banner);
+
+            auto dead = makeText("YOU ARE DEAD", 22, sf::Color(220,60,60));
+            dead.setStyle(sf::Text::Bold);
+            auto db = dead.getLocalBounds();
+            dead.setPosition({WIN_W*0.5f - db.size.x*0.5f - db.position.x,
+                               MARGIN + 8.f});
+            w.draw(dead);
+
+            auto spec = makeText("SPECTATING", 14, sf::Color(150,160,180));
+            auto sb = spec.getLocalBounds();
+            spec.setPosition({WIN_W*0.5f - sb.size.x*0.5f - sb.position.x,
+                               MARGIN + 28.f});
+            w.draw(spec);
+        }
+    }
+
+    // HUD / chat / hints always in screen space
     drawHUD(w);
     drawChat(w);
 
     if(m_fontLoaded){
         bool talking = m_voice.isTalking();
-        std::string hint = "WASD=Move  Space=Fire  Enter=Chat  Esc=Menu  V=Voice";
         sf::Color hcol = talking ? sf::Color(100,255,100) : sf::Color(80,80,80);
-        auto h=makeText(hint + (talking ? "  [MIC ON]" : ""), 14, hcol);
-        h.setPosition({10.f,(float)WIN_H-18.f}); w.draw(h);
+        std::string hint = localAlive
+            ? "WASD=Move  Space=Fire  Enter=Chat  Esc=Menu  V=Voice"
+            : "Esc=Menu  V=Voice  (Spectating)";
+        auto h = makeText(hint + (talking ? "  [MIC ON]" : ""), 14, hcol);
+        h.setPosition({10.f, (float)WIN_H - 18.f});
+        w.draw(h);
     }
 }
 
@@ -1414,7 +1527,7 @@ void GameClient::drawMatchOver(sf::RenderWindow& w)
     wt.setPosition({WIN_W/2.f-wb.size.x/2.f,96.f});
     w.draw(wt);
 
-    //  Per-player stats table 
+    // ── Per-player stats table ─────────────────────────────────────────────
     float y=150.f;
     auto sh=makeText("Player            Kills    XP Earned   Coins Earned",20,sf::Color(160,170,180));
     sh.setPosition({80.f,y}); w.draw(sh); y+=4.f;
@@ -1451,7 +1564,7 @@ void GameClient::drawMatchOver(sf::RenderWindow& w)
         y+=26.f;
     }
 
-    //  My updated totals (from latest PROFILE_UPDATE) 
+    // ── My updated totals (from latest PROFILE_UPDATE) ─────────────────────
     y+=6.f;
     sf::RectangleShape sep2({860.f,1.f}); sep2.setFillColor(sf::Color(60,70,90));
     sep2.setPosition({80.f,y}); w.draw(sep2); y+=10.f;
@@ -1461,7 +1574,7 @@ void GameClient::drawMatchOver(sf::RenderWindow& w)
     auto tot=makeText(totBuf,18,sf::Color::Yellow);
     tot.setPosition({80.f,y}); w.draw(tot); y+=30.f;
 
-    //  Leaderboard 
+    // ── Leaderboard ────────────────────────────────────────────────────────
     y+=8.f;
     auto lbh=makeText("Global Leaderboard  (Top 5 by Wins)",20,sf::Color(230,180,40));
     lbh.setPosition({80.f,y}); w.draw(lbh); y+=28.f;
@@ -1477,7 +1590,7 @@ void GameClient::drawMatchOver(sf::RenderWindow& w)
         y+=22.f;
     }
 
-    //  Footer hint 
+    // ── Footer hint ───────────────────────────────────────────────────────
     bool talking = m_voice.isTalking();
     std::string endHint = "[Esc] Menu    [V] Voice";
     if(talking) endHint += "  [MIC ON]";
@@ -1529,7 +1642,7 @@ void GameClient::drawPauseMenu(sf::RenderWindow& w)
     auto mp = sf::Mouse::getPosition(w);
     bool lmbDown = sf::Mouse::isButtonPressed(sf::Mouse::Button::Left);
 
-    //  Generic slider helper 
+    // ── Generic slider helper ──────────────────────────────────────────────
     //  returns true if the value changed this frame
     auto drawSlider = [&](const std::string& label, float sY,
                           float& value, sf::Color fillCol) -> bool
@@ -1579,7 +1692,7 @@ void GameClient::drawPauseMenu(sf::RenderWindow& w)
         return changed;
     };
 
-    //  Music / SFX volume 
+    // ── Music / SFX volume ────────────────────────────────────────────────
     if(drawSlider("Music & SFX Volume", CY+72.f, m_volume, sf::Color(0,200,140)))
     {
         if(m_audioOk) m_bgm.setVolume(m_volume*0.35f);
@@ -1589,7 +1702,7 @@ void GameClient::drawPauseMenu(sf::RenderWindow& w)
         if(m_sndPowerup) m_sndPowerup->setVolume(m_volume);
     }
 
-    //  Voice chat volume 
+    // ── Voice chat volume ─────────────────────────────────────────────────
     if(drawSlider("Voice Chat Volume", CY+154.f, m_voiceVolume, sf::Color(80,180,255)))
     {
         // VoicePlayer doesn't expose a volume API directly, but we can scale
@@ -1605,7 +1718,7 @@ void GameClient::drawPauseMenu(sf::RenderWindow& w)
     div2.setPosition({CX+30.f, CY+238.f});
     w.draw(div2);
 
-    //  Button helper (edge-triggered via static tracker) 
+    // ── Button helper (edge-triggered via static tracker) ─────────────────
     auto drawBtn = [&](float y, const std::string& lbl,
                        sf::Color normCol, sf::Color hovCol,
                        bool& wasHov) -> bool
@@ -1723,205 +1836,222 @@ void GameClient::drawDisconnected(sf::RenderWindow& w)
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Background – drawn behind the playfield in default view coordinates
-// A dusty tactical ground: base dirt colour + faint grid + tyre-track marks
+// Background – drawn in WORLD space while the game view is active.
+// Covers the full MAP_W × MAP_H area with a dirt tactical ground.
 // ════════════════════════════════════════════════════════════════════════════
 void GameClient::drawBackground(sf::RenderWindow& w)
 {
-    //  Outer margin fill (dark gunmetal — visible around the border) 
-    sf::RectangleShape outer({(float)WIN_W,(float)WIN_H});
-    outer.setFillColor(sf::Color(22,24,30));
-    w.draw(outer);
-
-    //  Playfield dirt base 
-    const float PX=(float)MAP_OFFSET_X, PY=(float)MAP_OFFSET_Y;
-    const float PW=(float)MAP_W,        PH=(float)MAP_H;
-
-    sf::RectangleShape dirt({PW,PH});
-    dirt.setPosition({PX,PY});
-    dirt.setFillColor(sf::Color(52,46,36));   // warm earthy brown
+    // Base dirt
+    sf::RectangleShape dirt({(float)MAP_W,(float)MAP_H});
+    dirt.setPosition({0.f,0.f});
+    dirt.setFillColor(sf::Color(52,46,36));
     w.draw(dirt);
 
-    //  Faint tactical grid (10×10 cells) 
-    const float CELL = 64.f;
-    sf::Color gridCol(60,54,42,100);
-    for(float x=PX; x<=PX+PW; x+=CELL)
+    // Tactical grid
+    const float CELL = 128.f;
+    sf::Color gridCol(60,54,42,90);
+    for(float x=0.f; x<=(float)MAP_W; x+=CELL)
     {
-        sf::RectangleShape ln({1.f,PH});
-        ln.setFillColor(gridCol); ln.setPosition({x,PY}); w.draw(ln);
+        sf::RectangleShape ln({1.f,(float)MAP_H});
+        ln.setFillColor(gridCol); ln.setPosition({x,0.f}); w.draw(ln);
     }
-    for(float y=PY; y<=PY+PH; y+=CELL)
+    for(float y=0.f; y<=(float)MAP_H; y+=CELL)
     {
-        sf::RectangleShape ln({PW,1.f});
-        ln.setFillColor(gridCol); ln.setPosition({PX,y}); w.draw(ln);
+        sf::RectangleShape ln({(float)MAP_W,1.f});
+        ln.setFillColor(gridCol); ln.setPosition({0.f,y}); w.draw(ln);
     }
 
-    //  Procedural dirt patches (deterministic pseudo-random) 
+    // Procedural dirt patches
     auto lcg = [](unsigned& s) -> unsigned {
         s = s*1664525u+1013904223u; return s;
     };
     unsigned seed = 0xCAFEBABE;
-    for(int i=0;i<60;i++)
+    for(int i=0;i<200;i++)
     {
-        float px2 = PX + (float)(lcg(seed)%(int)PW);
-        float py2 = PY + (float)(lcg(seed)%(int)PH);
-        float r   = 18.f + (float)(lcg(seed)%28);
+        float px = (float)(lcg(seed)%(unsigned)MAP_W);
+        float py = (float)(lcg(seed)%(unsigned)MAP_H);
+        float r  = 20.f + (float)(lcg(seed)%40);
         uint8_t v = 42 + (uint8_t)(lcg(seed)%18);
         sf::CircleShape patch(r);
-        patch.setOrigin({r,r}); patch.setPosition({px2,py2});
-        patch.setFillColor(sf::Color(v+8,v,v-6,80));
+        patch.setOrigin({r,r}); patch.setPosition({px,py});
+        patch.setFillColor(sf::Color(v+8,v,v-6,75));
         w.draw(patch);
     }
 
-    //  Tyre-track marks (pairs of thin parallel lines) 
+    // Tyre tracks
     seed = 0xDEAD1234;
-    for(int i=0;i<14;i++)
+    for(int i=0;i<50;i++)
     {
-        float tx = PX + 30.f + (float)(lcg(seed)%(int)(PW-60));
-        float ty = PY + 30.f + (float)(lcg(seed)%(int)(PH-60));
-        float len = 60.f + (float)(lcg(seed)%80);
+        float tx  = 60.f + (float)(lcg(seed)%(unsigned)(MAP_W-120));
+        float ty  = 60.f + (float)(lcg(seed)%(unsigned)(MAP_H-120));
+        float len = 80.f + (float)(lcg(seed)%120);
         float ang = (float)(lcg(seed)%180);
-        sf::Color tc(36,30,22,120);
+        sf::Color tc(36,30,22,110);
         for(int side=-1;side<=1;side+=2)
         {
             sf::RectangleShape track({len,3.f});
             track.setFillColor(tc);
             track.setOrigin({len*0.5f,1.5f});
-            track.setPosition({tx+(float)side*5.f,ty});
+            track.setPosition({tx+(float)side*7.f,ty});
             track.setRotation(sf::degrees(ang));
             w.draw(track);
         }
     }
-
-    //  Subtle vignette on playfield edges 
-    const float VIG = 30.f;
-    // Top strip
-    for(int k=0;k<(int)VIG;k++){
-        uint8_t a=(uint8_t)(70*(1.f-(float)k/VIG));
-        sf::RectangleShape v({PW,1.f});
-        v.setFillColor(sf::Color(0,0,0,a));
-        v.setPosition({PX,PY+(float)k}); w.draw(v);
-    }
-    // Bottom strip
-    for(int k=0;k<(int)VIG;k++){
-        uint8_t a=(uint8_t)(70*(1.f-(float)k/VIG));
-        sf::RectangleShape v({PW,1.f});
-        v.setFillColor(sf::Color(0,0,0,a));
-        v.setPosition({PX,PY+PH-(float)k}); w.draw(v);
-    }
-    // Left strip
-    for(int k=0;k<(int)VIG;k++){
-        uint8_t a=(uint8_t)(70*(1.f-(float)k/VIG));
-        sf::RectangleShape v({1.f,PH});
-        v.setFillColor(sf::Color(0,0,0,a));
-        v.setPosition({PX+(float)k,PY}); w.draw(v);
-    }
-    // Right strip
-    for(int k=0;k<(int)VIG;k++){
-        uint8_t a=(uint8_t)(70*(1.f-(float)k/VIG));
-        sf::RectangleShape v({1.f,PH});
-        v.setFillColor(sf::Color(0,0,0,a));
-        v.setPosition({PX+PW-(float)k,PY}); w.draw(v);
-    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Border – a heavy armoured wall drawn around the playfield in screen coords
+// Border – heavy armoured wall drawn IN WORLD SPACE around the map perimeter.
+// Called while the game view is active, so coordinates are world coordinates.
 // ════════════════════════════════════════════════════════════════════════════
 void GameClient::drawBorder(sf::RenderWindow& w)
 {
-    const float PX=(float)MAP_OFFSET_X, PY=(float)MAP_OFFSET_Y;
-    const float PW=(float)MAP_W,        PH=(float)MAP_H;
-    const float BT=18.f;   // border thickness (each side)
+    const float BT = 40.f;   // border thickness in world units
+    const float MW = (float)MAP_W;
+    const float MH = (float)MAP_H;
 
-    //  Four concrete slab sides 
-    // Colours: base concrete, edge highlight, edge shadow
-    sf::Color baseCol (72, 68, 60);
+    sf::Color baseCol (68, 64, 56);
     sf::Color hiCol   (105,100,90,200);
-    sf::Color shadCol (35, 32, 28);
-    sf::Color boltCol (48, 44, 38);
+    sf::Color shadCol (30, 28, 22);
+    sf::Color boltCol (46, 42, 36);
 
-    auto drawSlab = [&](float x,float y,float sw,float sh)
+    // Draw one slab with highlight/shadow edges
+    auto drawSlab = [&](float x, float y, float sw, float sh)
     {
         sf::RectangleShape slab({sw,sh});
         slab.setPosition({x,y}); slab.setFillColor(baseCol); w.draw(slab);
-        // top/left highlight edge
-        sf::RectangleShape hi({sw,3.f});
+        sf::RectangleShape hi({sw,4.f});
         hi.setFillColor(hiCol); hi.setPosition({x,y}); w.draw(hi);
-        sf::RectangleShape hi2({3.f,sh});
+        sf::RectangleShape hi2({4.f,sh});
         hi2.setFillColor(hiCol); hi2.setPosition({x,y}); w.draw(hi2);
-        // bottom/right shadow edge
-        sf::RectangleShape sh2({sw,3.f});
-        sh2.setFillColor(shadCol); sh2.setPosition({x,y+sh-3.f}); w.draw(sh2);
-        sf::RectangleShape sh3({3.f,sh});
-        sh3.setFillColor(shadCol); sh3.setPosition({x+sw-3.f,y}); w.draw(sh3);
+        sf::RectangleShape sh2({sw,4.f});
+        sh2.setFillColor(shadCol); sh2.setPosition({x,y+sh-4.f}); w.draw(sh2);
+        sf::RectangleShape sh3({4.f,sh});
+        sh3.setFillColor(shadCol); sh3.setPosition({x+sw-4.f,y}); w.draw(sh3);
     };
 
-    // Top slab
-    drawSlab(PX-BT, PY-BT, PW+BT*2, BT);
-    // Bottom slab
-    drawSlab(PX-BT, PY+PH,  PW+BT*2, BT);
-    // Left slab
-    drawSlab(PX-BT, PY,      BT, PH);
-    // Right slab
-    drawSlab(PX+PW, PY,      BT, PH);
+    drawSlab(-BT,    -BT,    MW+BT*2, BT);    // Top
+    drawSlab(-BT,    MH,     MW+BT*2, BT);    // Bottom
+    drawSlab(-BT,    0.f,    BT,      MH);    // Left
+    drawSlab(MW,     0.f,    BT,      MH);    // Right
 
-    //  Corner reinforcement plates 
-    sf::Color cornerCol(55,50,44);
+    // Corner plates
+    sf::Color cornerCol(50,46,40);
     auto drawCorner = [&](float x,float y)
     {
         sf::RectangleShape c({BT,BT});
         c.setPosition({x,y}); c.setFillColor(cornerCol);
-        c.setOutlineThickness(2.f); c.setOutlineColor(shadCol);
-        w.draw(c);
-        // Diagonal stripe detail
-        sf::RectangleShape diag({BT*1.4f,3.f});
-        diag.setOrigin({BT*0.7f,1.5f});
-        diag.setPosition({x+BT*0.5f,y+BT*0.5f});
-        diag.setRotation(sf::degrees(45.f));
-        diag.setFillColor(sf::Color(40,36,30,160));
+        c.setOutlineThickness(2.f); c.setOutlineColor(shadCol); w.draw(c);
+        sf::RectangleShape diag({BT*1.4f,4.f});
+        diag.setOrigin({BT*0.7f,2.f}); diag.setPosition({x+BT*0.5f,y+BT*0.5f});
+        diag.setRotation(sf::degrees(45.f)); diag.setFillColor(sf::Color(38,34,28,160));
         w.draw(diag);
     };
-    drawCorner(PX-BT,    PY-BT);
-    drawCorner(PX+PW,    PY-BT);
-    drawCorner(PX-BT,    PY+PH);
-    drawCorner(PX+PW,    PY+PH);
+    drawCorner(-BT,  -BT);
+    drawCorner(MW,   -BT);
+    drawCorner(-BT,  MH);
+    drawCorner(MW,   MH);
 
-    //  Bolt rivets along the border 
-    auto drawBolt = [&](float x,float y)
+    // Bolt rivets
+    auto drawBolt = [&](float x, float y)
     {
-        sf::CircleShape bolt(3.5f);
-        bolt.setOrigin({3.5f,3.5f}); bolt.setPosition({x,y});
+        sf::CircleShape bolt(5.f);
+        bolt.setOrigin({5.f,5.f}); bolt.setPosition({x,y});
         bolt.setFillColor(boltCol);
-        bolt.setOutlineThickness(1.f); bolt.setOutlineColor(sf::Color(25,22,18));
+        bolt.setOutlineThickness(1.5f); bolt.setOutlineColor(sf::Color(22,20,16));
         w.draw(bolt);
-        // Shine dot
-        sf::CircleShape shine(1.f);
-        shine.setOrigin({1.f,1.f}); shine.setPosition({x-1.f,y-1.f});
-        shine.setFillColor(sf::Color(130,124,110,160));
-        w.draw(shine);
+        sf::CircleShape shine(1.5f);
+        shine.setOrigin({1.5f,1.5f}); shine.setPosition({x-1.5f,y-1.5f});
+        shine.setFillColor(sf::Color(120,115,105,150)); w.draw(shine);
     };
-
-    // Top/bottom bolt rows
-    float boltStep = 60.f;
-    for(float x=PX+boltStep*0.5f; x<PX+PW; x+=boltStep)
+    for(float x=100.f; x<MW; x+=120.f)
     {
-        drawBolt(x, PY-BT*0.5f);
-        drawBolt(x, PY+PH+BT*0.5f);
+        drawBolt(x, -BT*0.5f);
+        drawBolt(x, MH+BT*0.5f);
     }
-    // Left/right bolt columns
-    for(float y=PY+boltStep*0.5f; y<PY+PH; y+=boltStep)
+    for(float y=100.f; y<MH; y+=120.f)
     {
-        drawBolt(PX-BT*0.5f, y);
-        drawBolt(PX+PW+BT*0.5f, y);
+        drawBolt(-BT*0.5f, y);
+        drawBolt(MW+BT*0.5f, y);
     }
 
-    //  Faint "DANGER ZONE" text on top border 
+    // "DANGER ZONE" text on top border
     if(m_fontLoaded)
     {
-        auto warn=makeText("D A N G E R   Z O N E", 11, sf::Color(90,82,70,160));
+        auto warn=makeText("D A N G E R   Z O N E", 18, sf::Color(90,82,70,180));
         auto wb=warn.getLocalBounds();
-        warn.setPosition({PX+(PW-wb.size.x)*0.5f-wb.position.x, PY-BT+3.f});
+        warn.setPosition({MW*0.5f-wb.size.x*0.5f-wb.position.x, -BT+8.f});
         w.draw(warn);
+    }
+}
+
+// ============================================================================
+// Screen-space border -- drawn in DEFAULT VIEW coords (pixels).
+// Used in spectator/dead mode to frame the minimap with the same armoured
+// aesthetic as the world-space border, but fitted to the window edges.
+// margin = screen pixels of gap from window edge to playfield rect.
+// ============================================================================
+void GameClient::drawScreenBorder(sf::RenderWindow& w, float margin)
+{
+    const float BT = margin;          // use the margin itself as thickness
+    const float IW = WIN_W - BT*2.f; // inner rect width
+    const float IH = WIN_H - BT*2.f; // inner rect height
+
+    sf::Color base  (68, 64, 56);
+    sf::Color hi    (105,100,90,200);
+    sf::Color shad  (30, 28, 22);
+    sf::Color bolt  (46, 42, 36);
+
+    // Helper: draw a slab rectangle
+    auto slab = [&](float x, float y, float sw, float sh){
+        sf::RectangleShape r({sw,sh});
+        r.setPosition({x,y}); r.setFillColor(base); w.draw(r);
+        sf::RectangleShape h({sw,3.f});
+        h.setFillColor(hi); h.setPosition({x,y}); w.draw(h);
+        sf::RectangleShape h2({3.f,sh});
+        h2.setFillColor(hi); h2.setPosition({x,y}); w.draw(h2);
+        sf::RectangleShape s2({sw,3.f});
+        s2.setFillColor(shad); s2.setPosition({x,y+sh-3.f}); w.draw(s2);
+        sf::RectangleShape s3({3.f,sh});
+        s3.setFillColor(shad); s3.setPosition({x+sw-3.f,y}); w.draw(s3);
+    };
+
+    // Four sides
+    slab(0.f,       0.f,       WIN_W,     BT);          // top
+    slab(0.f,       WIN_H-BT,  WIN_W,     BT);          // bottom
+    slab(0.f,       BT,        BT,        IH);          // left
+    slab(WIN_W-BT,  BT,        BT,        IH);          // right
+
+    // Corners
+    sf::Color cornerCol(50,46,40);
+    auto corner = [&](float x, float y){
+        sf::RectangleShape c({BT,BT});
+        c.setPosition({x,y}); c.setFillColor(cornerCol);
+        c.setOutlineThickness(2.f); c.setOutlineColor(shad); w.draw(c);
+        sf::RectangleShape d({BT*1.4f,3.f});
+        d.setOrigin({BT*0.7f,1.5f}); d.setPosition({x+BT*0.5f,y+BT*0.5f});
+        d.setRotation(sf::degrees(45.f));
+        d.setFillColor(sf::Color(38,34,28,160)); w.draw(d);
+    };
+    corner(0.f,          0.f);
+    corner(WIN_W-BT,     0.f);
+    corner(0.f,          WIN_H-BT);
+    corner(WIN_W-BT,     WIN_H-BT);
+
+    // Bolt rivets
+    auto boltFn = [&](float x, float y){
+        sf::CircleShape b(4.f);
+        b.setOrigin({4.f,4.f}); b.setPosition({x,y});
+        b.setFillColor(bolt);
+        b.setOutlineThickness(1.f); b.setOutlineColor(sf::Color(20,18,14));
+        w.draw(b);
+    };
+    float bstep = 80.f;
+    for(float x=BT+bstep*0.5f; x<WIN_W-BT; x+=bstep){
+        boltFn(x, BT*0.5f);
+        boltFn(x, WIN_H-BT*0.5f);
+    }
+    for(float y=BT+bstep*0.5f; y<WIN_H-BT; y+=bstep){
+        boltFn(BT*0.5f, y);
+        boltFn(WIN_W-BT*0.5f, y);
     }
 }
