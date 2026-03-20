@@ -29,11 +29,14 @@ target_link_libraries(TankNet PRIVATE
     ws2_32
 )
 
-# Copy server.cfg and assets next to exe
+# Copy server.cfg, run.bat and assets next to exe
 add_custom_command(TARGET TankNet POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_SOURCE_DIR}/server.cfg
         $<TARGET_FILE_DIR:TankNet>/server.cfg
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/run.bat
+        $<TARGET_FILE_DIR:TankNet>/run.bat
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/assets
         $<TARGET_FILE_DIR:TankNet>/assets

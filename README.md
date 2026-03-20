@@ -113,31 +113,31 @@ TankNet.exe client YourName 192.168.1.42
 
 ```
 TankNet/
-├── CMakeLists.txt
-├── CMakePresets.json
-├── server.cfg
-├── run.bat
-├── README.md
-├── assets/
-│   └── README.txt        (place audio files here)
-├── include/
-│   ├── Common.h          packets, constants, enums
-│   ├── Network.h         UdpSocket, ServerNet, ClientNet
-│   ├── Tank.h            tank entity (server-side)
-│   ├── Bullet.h          bullet entity (server-side)
-│   ├── GameServer.h      authoritative server logic
-│   ├── GameClient.h      client + all UI screens
-│   └── Persistence.h     JSON player data
-│   └── VoiceChat.h       Voice Chat (opus)
-└── src/
-    ├── main.cpp
-    ├── Network.cpp
-    ├── Tank.cpp
-    ├── Bullet.cpp
-    ├── GameServer.cpp
-    ├── GameClient.cpp
-    └── Persistence.cpp
-    └── VoiceChat.cpp
+├ CMakeLists.txt
+├ CMakePresets.json
+├ server.cfg
+├ run.bat
+├ README.md
+├ assets/
+│   └ README.txt        (place audio files here)
+├ include/
+│   ├ Common.h          packets, constants, enums
+│   ├ Network.h         UdpSocket, ServerNet, ClientNet
+│   ├ Tank.h            tank entity (server-side)
+│   ├ Bullet.h          bullet entity (server-side)
+│   ├ GameServer.h      authoritative server logic
+│   ├ GameClient.h      client + all UI screens
+│   └ Persistence.h     JSON player data
+│   └ VoiceChat.h       Voice Chat (opus)
+└ src/
+    ├ main.cpp
+    ├ Network.cpp
+    ├ Tank.cpp
+    ├ Bullet.cpp
+    ├ GameServer.cpp
+    ├ GameClient.cpp
+    └ Persistence.cpp
+    └ VoiceChat.cpp
 
 ```
 
@@ -151,9 +151,9 @@ Obstacles randomly generated each match from a shared seed (deterministic across
 
 ### Block Diagram
 ```
-[Client A]──INPUT-->|
-[Client B]──INPUT-->|---[Server: physics/collision/scoring/persistence]-->STATE-->[All Clients]
-[Client C]──INPUT-->|
+[Client A]INPUT-->|
+[Client B]INPUT-->|---[Server: physics/collision/scoring/persistence]-->STATE-->[All Clients]
+[Client C]INPUT-->|
 ```
 
 ### Synchronization Strategy
