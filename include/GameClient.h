@@ -63,6 +63,14 @@ private:
     VoiceChat m_voice;
     bool      m_voiceInit = false;
 
+    //  Skin textures (procedurally generated at startup) 
+    // Each skin has a body texture and a turret texture
+    sf::RenderTexture m_skinBodyRT[SKIN_COUNT];
+    sf::RenderTexture m_skinTurretRT[SKIN_COUNT];
+    sf::Texture       m_skinBodyTex[SKIN_COUNT];
+    sf::Texture       m_skinTurretTex[SKIN_COUNT];
+    bool              m_texturesGenerated = false;
+
     float m_dt = 0.f;
 
     void processPackets();
@@ -87,6 +95,7 @@ private:
 
     void generateObstacles(uint32_t seed);
     void loadAssets();
+    void generateSkinTextures();
 
     sf::Color   skinColor(uint8_t skin) const;
     sf::Color   powerupColor(PowerupType t) const;

@@ -77,11 +77,12 @@ TankNet.exe client YourName 192.168.1.42
 - **XP**: +50 per kill, +100 for match win - levels up every 200 XP
 - **Coins**: +20 per kill, +50 for match win - spend in shop
 - **Skins**: 5 tank colours, unlocked in shop (press O in lobby)
-  - Green: free (default)
-  - Blue: 40 coins
-  - Red: 80 coins
-  - Gold: 120 coins
-  - Purple: 200 coins
+  - Army Green: free (default)
+  - Camo: 40 coins
+  - Desert: 80 coins
+  - Arctic: 120 coins
+  - Stealth: 160 coins
+  - Gold: 200 coins
 - All data saved to `players.json` next to the server exe
 
 ---

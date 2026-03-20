@@ -27,10 +27,10 @@ constexpr int   COINS_PER_WIN   = 50;
 constexpr int   XP_PER_LEVEL    = 200;
 constexpr uint16_t NET_PORT     = 54100;
 
-//  Skin definitions (index - colour packed RGBA) 
-constexpr int SKIN_COUNT = 5;
+//  Skin definitions 
+constexpr int SKIN_COUNT = 6;
 // Prices in coins (index 0 = default, free)
-constexpr int SKIN_PRICES[SKIN_COUNT] = { 0, 40, 80, 120, 200 };
+constexpr int SKIN_PRICES[SKIN_COUNT] = { 0, 40, 80, 120, 160, 200 };
 
 //  Map obstacle
 struct Obstacle { float x, y, w, h; };
@@ -60,20 +60,22 @@ constexpr int MAX_CHAT_HIST = 12;
 constexpr int OBS_COLS = 8;
 constexpr int OBS_ROWS = 6;
 
+
 // Packet types
+
 enum class PktType : uint8_t
 {
     // Lobby
     CONNECT         = 0,
     CONNECT_ACK     = 1,
-    LOBBY_STATE     = 2,   // server-all: full lobby snapshot
-    PLAYER_READY    = 3,   // client-server
-    GAME_START      = 4,   // server-all
+    LOBBY_STATE     = 2,   // server→all: full lobby snapshot
+    PLAYER_READY    = 3,   // client→server
+    GAME_START      = 4,   // server→all
     DISCONNECT      = 5,
 
     // In-game
     INPUT           = 10,
-    GAME_STATE      = 11,  // server-all: full game snapshot
+    GAME_STATE      = 11,  // server→all: full game snapshot
     BULLET_SPAWN    = 12,
     PLAYER_HIT      = 13,
     PLAYER_DEAD     = 14,
@@ -86,14 +88,14 @@ enum class PktType : uint8_t
     // Shop / profile
     BUY_SKIN        = 30,
     BUY_SKIN_ACK    = 31,
-    PROFILE_UPDATE  = 32,  // server-client: updated coins/xp/skins
+    PROFILE_UPDATE  = 32,  // server→client: updated coins/xp/skins
 
     // Powerups
-    POWERUP_STATE   = 50,  // server-all: powerup positions/types in game state
-    POWERUP_COLLECT = 51,  // server-all: a player collected a powerup
+    POWERUP_STATE   = 50,  // server→all: powerup positions/types in game state
+    POWERUP_COLLECT = 51,  // server→all: a player collected a powerup
 
     // Voice chat
-    VOICE_DATA      = 60,  // client-server-others: compressed audio chunk
+    VOICE_DATA      = 60,  // client→server→others: compressed audio chunk
 
     // Utility
     PING            = 40,
@@ -101,7 +103,9 @@ enum class PktType : uint8_t
     ACK             = 42,
 };
 
+
 // Packet structs  (all packed – safe over loopback/LAN)
+
 #pragma pack(push,1)
 
 //  Lobby 
