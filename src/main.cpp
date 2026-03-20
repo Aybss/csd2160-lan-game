@@ -57,7 +57,7 @@ int main(int argc, char* argv[])
             GameServer srv(port);
             srv.run();
         } else {
-            std::cout<<"[MODE] Client → "<<ip<<":"<<port<<" as "<<username<<"\n";
+            std::cout<<"[MODE] Client -> "<<ip<<":"<<port<<" as "<<username<<"\n";
             GameClient cli(ip,port,username);
             cli.run();
         }

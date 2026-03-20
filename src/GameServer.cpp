@@ -74,7 +74,7 @@ void GameServer::run()
                 for(int i=0;i<MAX_PLAYERS;i++) m_lobby[i].ready = false;
                 m_roundWins.fill(0);
                 broadcastLobbyState();
-                std::cout<<"[Server] Returned to lobby.";
+                std::cout<<"[Server] Returned to lobby.\n";
             }
         }
 
@@ -101,8 +101,17 @@ void GameServer::handlePacket(const Envelope& e)
         case PktType::DISCONNECT:    if(e.len>=(int)sizeof(PktDisconnect)){
             PktDisconnect p; memcpy(&p,e.buf,sizeof(p)); handleDisconnect(p.pid); } break;
         case PktType::PING:          { PktType pong=PktType::PONG_PKT; m_net.sendTo(e.buf[1],&pong,1); } break;
+        case PktType::VOICE_DATA:    handleVoice(e); break;
         default: break;
     }
+}
+
+void GameServer::handleVoice(const Envelope& e)
+{
+    if(e.len < (int)(sizeof(PktType)+sizeof(uint8_t)+sizeof(uint16_t))) return;
+    // Relay voice packet to all OTHER clients as-is
+    uint8_t senderPid = e.buf[1];
+    m_net.broadcastExcept(senderPid, e.buf, e.len);
 }
 
 void GameServer::handleConnect(const Envelope& e)
@@ -239,9 +248,7 @@ void GameServer::startGame()
     // Zero round wins
     m_roundWins.fill(0);
 
-    PktGameStart gs; gs.mapSeed = m_mapSeed;
-    m_net.broadcast(&gs,sizeof(gs));
-
+    // resetRound handles PktGameStart broadcast + immediate state broadcast
     resetRound();
     std::cout<<"[Server] Game started! Seed="<<m_mapSeed<<"\n";
 }
@@ -295,11 +302,61 @@ void GameServer::resetRound()
     m_aliveCount=0;
     for(int i=0;i<MAX_PLAYERS;i++) if(m_lobby[i].active) m_aliveCount++;
 
-    // Tell all clients to enter IN_GAME — same packet used for first start
-    // Reuse same map seed so obstacles stay identical across rounds
+    spawnPowerups();
+
+    // Tell all clients to enter IN_GAME
     PktGameStart gs; gs.mapSeed = m_mapSeed;
     m_net.broadcast(&gs, sizeof(gs));
-    std::cout << "[Server] Round started.";
+
+    // Immediately broadcast state so clients have real tank positions
+    // without waiting up to 50ms for the next scheduled broadcast
+    broadcastGameState();
+
+    std::cout << "[Server] Round started.\n";
+}
+
+void GameServer::spawnPowerups()
+{
+    // Spread powerups around the map in fixed zones, random types
+    static const float PX[MAX_POWERUPS] = {
+        MAP_W * 0.25f, MAP_W * 0.75f, MAP_W * 0.25f, MAP_W * 0.75f
+    };
+    static const float PY[MAX_POWERUPS] = {
+        MAP_H * 0.25f, MAP_H * 0.25f, MAP_H * 0.75f, MAP_H * 0.75f
+    };
+    for(int i=0;i<MAX_POWERUPS;i++){
+        m_powerups[i].active = 1;
+        m_powerups[i].ptype  = (PowerupType)(rand() % 3);
+        m_powerups[i].x      = PX[i] + (rand()%80 - 40);
+        m_powerups[i].y      = PY[i] + (rand()%80 - 40);
+        m_powerupRespawn[i]  = 0.f;
+    }
+}
+
+void GameServer::checkPowerupCollisions()
+{
+    for(int pi=0;pi<MAX_POWERUPS;pi++){
+        if(!m_powerups[pi].active) continue;
+        for(int ti=0;ti<MAX_PLAYERS;ti++){
+            if(!m_lobby[ti].active || !m_tanks[ti].alive()) continue;
+            float dx = m_tanks[ti].x() - m_powerups[pi].x;
+            float dy = m_tanks[ti].y() - m_powerups[pi].y;
+            float r  = TANK_RADIUS + POWERUP_RADIUS;
+            if(dx*dx+dy*dy < r*r){
+                // Collect
+                m_tanks[ti].applyPowerup(m_powerups[pi].ptype);
+                m_powerups[pi].active    = 0;
+                m_powerupRespawn[pi]     = 10.f;  // respawn in 10s
+
+                PktPowerupCollect pc;
+                pc.pid   = (uint8_t)ti;
+                pc.idx   = (uint8_t)pi;
+                pc.ptype = m_powerups[pi].ptype;
+                m_net.broadcast(&pc, sizeof(pc));
+                break;
+            }
+        }
+    }
 }
 
 void GameServer::updateGame(float dt)
@@ -325,10 +382,26 @@ void GameServer::updateGame(float dt)
         }
     }
 
+    // Tick buffs on all tanks
+    for(int i=0;i<MAX_PLAYERS;i++)
+        if(m_lobby[i].active && m_tanks[i].alive()) m_tanks[i].tickBuffs(dt);
+
     // Update bullets
     for(auto& b : m_bullets) b.update(dt, m_obstacles);
 
     checkBulletCollisions();
+    checkPowerupCollisions();
+
+    // Powerup respawn timers
+    for(int i=0;i<MAX_POWERUPS;i++){
+        if(!m_powerups[i].active){
+            m_powerupRespawn[i] -= dt;
+            if(m_powerupRespawn[i] <= 0.f){
+                m_powerups[i].active = 1;
+                m_powerupRespawn[i]  = 0.f;
+            }
+        }
+    }
 
     // Remove dead bullets
     m_bullets.erase(std::remove_if(m_bullets.begin(),m_bullets.end(),
@@ -461,6 +534,11 @@ void GameServer::broadcastGameState()
         gs.bullets[bi].life=b.life();
         bi++;
     }
+    // Powerups
+    for(int i=0;i<MAX_POWERUPS;i++) gs.powerups[i] = m_powerups[i];
+    // Buff masks
+    for(int i=0;i<MAX_PLAYERS;i++)  gs.buffs[i]    = m_tanks[i].buffMask();
+
     m_net.broadcast(&gs,sizeof(gs));
 }
 

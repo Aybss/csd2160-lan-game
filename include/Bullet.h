@@ -2,8 +2,6 @@
 #include "Common.h"
 #include <vector>
 
-struct Obstacle;
-
 class Bullet
 {
 public:

@@ -27,10 +27,30 @@ constexpr int   COINS_PER_WIN   = 50;
 constexpr int   XP_PER_LEVEL    = 200;
 constexpr uint16_t NET_PORT     = 54100;
 
-//  Skin definitions (index → colour packed RGBA) 
+//  Skin definitions (index - colour packed RGBA) 
 constexpr int SKIN_COUNT = 5;
 // Prices in coins (index 0 = default, free)
 constexpr int SKIN_PRICES[SKIN_COUNT] = { 0, 40, 80, 120, 200 };
+
+//  Map obstacle
+struct Obstacle { float x, y, w, h; };
+
+//  Powerups 
+constexpr int   MAX_POWERUPS     = 4;
+constexpr float POWERUP_RADIUS   = 14.f;
+constexpr float POWERUP_DURATION = 6.f;   // seconds buff lasts
+
+enum class PowerupType : uint8_t
+{
+    SPEED      = 0,   // 1.8x movement speed
+    RAPIDFIRE  = 1,   // 0.15s cooldown instead of 0.5s
+    SHIELD     = 2,   // absorbs next hit
+};
+
+//  Voice 
+constexpr int VOICE_FRAME_MS    = 20;    // Opus frame size in ms
+constexpr int VOICE_SAMPLE_RATE = 16000; // 16kHz mono
+constexpr int VOICE_MAX_BYTES   = 400;   // max compressed bytes per frame
 
 //  Chat 
 constexpr int MAX_CHAT_MSG  = 48;
@@ -46,14 +66,14 @@ enum class PktType : uint8_t
     // Lobby
     CONNECT         = 0,
     CONNECT_ACK     = 1,
-    LOBBY_STATE     = 2,   // server→all: full lobby snapshot
-    PLAYER_READY    = 3,   // client→server
-    GAME_START      = 4,   // server→all
+    LOBBY_STATE     = 2,   // server-all: full lobby snapshot
+    PLAYER_READY    = 3,   // client-server
+    GAME_START      = 4,   // server-all
     DISCONNECT      = 5,
 
     // In-game
     INPUT           = 10,
-    GAME_STATE      = 11,  // server→all: full game snapshot
+    GAME_STATE      = 11,  // server-all: full game snapshot
     BULLET_SPAWN    = 12,
     PLAYER_HIT      = 13,
     PLAYER_DEAD     = 14,
@@ -66,7 +86,14 @@ enum class PktType : uint8_t
     // Shop / profile
     BUY_SKIN        = 30,
     BUY_SKIN_ACK    = 31,
-    PROFILE_UPDATE  = 32,  // server→client: updated coins/xp/skins
+    PROFILE_UPDATE  = 32,  // server-client: updated coins/xp/skins
+
+    // Powerups
+    POWERUP_STATE   = 50,  // server-all: powerup positions/types in game state
+    POWERUP_COLLECT = 51,  // server-all: a player collected a powerup
+
+    // Voice chat
+    VOICE_DATA      = 60,  // client-server-others: compressed audio chunk
 
     // Utility
     PING            = 40,
@@ -161,12 +188,23 @@ struct BulletState
     float    life = BULLET_LIFETIME;
 };
 
+// PowerupState must be declared before PktGameState which embeds it
+struct PowerupState
+{
+    uint8_t     active = 0;
+    PowerupType ptype  = PowerupType::SPEED;
+    float       x = 0, y = 0;
+};
+
 struct PktGameState
 {
-    PktType     type = PktType::GAME_STATE;
-    uint32_t    seq  = 0;
-    PlayerState players[MAX_PLAYERS]{};
-    BulletState bullets[MAX_PLAYERS * 3]{};  // up to 3 bullets per player
+    PktType      type = PktType::GAME_STATE;
+    uint32_t     seq  = 0;
+    PlayerState  players[MAX_PLAYERS]{};
+    BulletState  bullets[MAX_PLAYERS * 3]{};
+    PowerupState powerups[MAX_POWERUPS]{};
+    // Per-player active buff bitmask: bit0=speed, bit1=rapidfire, bit2=shield
+    uint8_t      buffs[MAX_PLAYERS]{};
 };
 
 struct PktBulletSpawn
@@ -243,6 +281,24 @@ struct PktProfileUpdate
     uint32_t coins        = 0;
     uint8_t  ownedSkins   = 0;  // bitmask
     uint16_t totalWins    = 0;
+};
+
+//  Powerups 
+struct PktPowerupCollect
+{
+    PktType     type  = PktType::POWERUP_COLLECT;
+    uint8_t     pid   = 0;        // who collected it
+    uint8_t     idx   = 0;        // which powerup slot
+    PowerupType ptype = PowerupType::SPEED;
+};
+
+//  Voice 
+struct PktVoiceData
+{
+    PktType  type    = PktType::VOICE_DATA;
+    uint8_t  pid     = 0;
+    uint16_t length  = 0;                      // bytes of compressed data
+    uint8_t  data[VOICE_MAX_BYTES]{};
 };
 
 //  Utility 

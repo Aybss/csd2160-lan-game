@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(SFML 3 COMPONENTS Graphics Window System Audio REQUIRED)
+find_package(Opus CONFIG REQUIRED)
 
 set(SOURCES
     src/main.cpp
@@ -14,6 +15,7 @@ set(SOURCES
     src/Bullet.cpp
     src/GameServer.cpp
     src/GameClient.cpp
+    src/VoiceChat.cpp
 )
 
 add_executable(TankNet ${SOURCES})
@@ -23,6 +25,7 @@ target_link_libraries(TankNet PRIVATE
     SFML::Window
     SFML::System
     SFML::Audio
+    Opus::opus
     ws2_32
 )
 

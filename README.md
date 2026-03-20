@@ -26,7 +26,7 @@ cd C:\vcpkg
 
 ## 2 – Build
 
-SFML is declared in `vcpkg.json` and downloaded automatically — no manual `vcpkg install` needed.
+SFML is declared in `vcpkg.json` and downloaded automatically - no manual `vcpkg install` needed.
 
 ```powershell
 cd TankNet
@@ -53,7 +53,7 @@ Opens one server window and two client windows automatically.
 TankNet.exe server
 ```
 
-**Client machines** — edit `server.cfg`, set `SERVER_IP` to the server's LAN IP, then:
+**Client machines** - edit `server.cfg`, set `SERVER_IP` to the server's LAN IP, then:
 ```
 TankNet.exe client YourName
 ```
@@ -80,7 +80,7 @@ TankNet.exe client YourName 192.168.1.42
 
 ## Game Flow
 
-1. Players connect → **Lobby** screen shows all players, their level and win count
+1. Players connect - **Lobby** screen shows all players, their level and win count
 2. Each player presses **R** to ready up
 3. Once all players are ready (minimum 2), game starts automatically
 4. **Round**: last tank standing wins the round. First to **3 round wins** wins the match
@@ -91,8 +91,8 @@ TankNet.exe client YourName 192.168.1.42
 
 ## Progression & Shop
 
-- **XP**: +50 per kill, +100 for match win → levels up every 200 XP
-- **Coins**: +20 per kill, +50 for match win → spend in shop
+- **XP**: +50 per kill, +100 for match win - levels up every 200 XP
+- **Coins**: +20 per kill, +50 for match win - spend in shop
 - **Skins**: 5 tank colours, unlocked in shop (press O in lobby)
   - Green: free (default)
   - Blue: 40 coins
@@ -105,23 +105,22 @@ TankNet.exe client YourName 192.168.1.42
 
 ## Audio 
 
-| File | When played |
+| File | When played | Credits
 |---|---|
-| `shoot.wav` | Tank fires |
-| `hit.wav` | Tank takes damage |
-| `dead.wav` | Tank destroyed |
-| `bgm.ogg` | Background music (loops) |
-
-Game runs fine without them. Free assets: https://freesound.org / https://opengameart.org
+| `shoot.wav` | Tank fires | https://freesound.org/people/LittleRobotSoundFactory/sounds/270336/
+| `hit.wav` | Tank takes damage | https://freesound.org/people/LittleRobotSoundFactory/sounds/270332/
+| `dead.wav` | Tank destroyed | https://freesound.org/people/thehorriblejoke/sounds/259962/
+| `powerup.wav` | Background music (loops) | https://freesound.org/people/Prof.Mudkip/sounds/422089/
+| `bgm.ogg` | Background music (loops) | https://freesound.org/people/josefpres/sounds/655186/
 
 ---
 
 ## Network Architecture
 
-- **UDP only** (Winsock2, non-blocking) — no TCP anywhere
+- **UDP only** (Winsock2, non-blocking) - no TCP anywhere
 - **Client-Server**: server owns all physics, collision, scoring, and persistence
 - Clients send `PktInput` every frame; server broadcasts `PktGameState` at 20 Hz
-- Packet types: CONNECT → CONNECT_ACK → LOBBY_STATE → GAME_START → INPUT / GAME_STATE / BULLET_SPAWN / PLAYER_HIT / PLAYER_DEAD → ROUND_OVER → MATCH_OVER
+- Packet types: CONNECT - CONNECT_ACK - LOBBY_STATE - GAME_START - INPUT / GAME_STATE / BULLET_SPAWN / PLAYER_HIT / PLAYER_DEAD - ROUND_OVER - MATCH_OVER
 - **Disconnect handling**: timed-out clients (8s no packet) are removed gracefully; their tank is killed; other players continue unaffected
 - **Out-of-order protection**: `PktGameState` and `PktInput` carry sequence numbers; stale packets are discarded
 
@@ -146,6 +145,7 @@ TankNet/
 │   ├── GameServer.h      authoritative server logic
 │   ├── GameClient.h      client + all UI screens
 │   └── Persistence.h     JSON player data
+│   └── VoiceChat.h       Voice Chat (opus)
 └── src/
     ├── main.cpp
     ├── Network.cpp
@@ -154,6 +154,8 @@ TankNet/
     ├── GameServer.cpp
     ├── GameClient.cpp
     └── Persistence.cpp
+    └── VoiceChat.cpp
+
 ```
 
 ---
@@ -175,7 +177,7 @@ Obstacles randomly generated each match from a shared seed (deterministic across
 - Server is authoritative for all state
 - Clients dead-reckon locally between 20 Hz state broadcasts
 - Bullet spawns, hits, deaths sent as discrete reliable-style events (broadcast immediately)
-- Map generated deterministically from shared seed — no need to sync obstacle state
+- Map generated deterministically from shared seed - no need to sync obstacle state
 
 ### Durable Communication
 - Non-blocking UDP with 30-second timeout detection

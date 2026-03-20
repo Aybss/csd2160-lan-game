@@ -37,7 +37,7 @@ struct ClientRecord
 //  Inbound envelope 
 struct Envelope
 {
-    uint8_t     buf[512]{};
+    uint8_t     buf[2048]{};
     int         len  = 0;
     sockaddr_in from{};
 };

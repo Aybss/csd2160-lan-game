@@ -60,7 +60,7 @@ bool ServerNet::init(uint16_t port)
 
 void ServerNet::poll(float nowSec)
 {
-    uint8_t buf[512];
+    uint8_t buf[2048];
     sockaddr_in from{};
     int r;
     while((r=m_sock.recvFrom(buf,sizeof(buf),from))>0)
@@ -157,7 +157,7 @@ bool ClientNet::init(const std::string& ip, uint16_t port)
 }
 void ClientNet::poll()
 {
-    uint8_t buf[512]; sockaddr_in from{};
+    uint8_t buf[2048]; sockaddr_in from{};
     int r;
     while((r=m_sock.recvFrom(buf,sizeof(buf),from))>0)
     {

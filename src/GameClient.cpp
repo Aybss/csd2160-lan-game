@@ -1,4 +1,5 @@
 #include "GameClient.h"
+#include "VoiceChat.h"
 #include <SFML/Graphics.hpp>
 #include <SFML/Audio.hpp>
 #include <cstring>
@@ -40,9 +41,10 @@ void GameClient::loadAssets()
 
     // Sounds – graceful fallback if files missing
     // SFML 3: SoundBuffer uses openFromFile; Sound requires buffer in constructor
-    if(m_sbShoot.loadFromFile("assets/shoot.wav")) m_sndShoot.emplace(m_sbShoot);
-    if(m_sbHit.loadFromFile("assets/hit.wav"))     m_sndHit.emplace(m_sbHit);
-    if(m_sbDead.loadFromFile("assets/dead.wav"))   m_sndDead.emplace(m_sbDead);
+    if(m_sbShoot.loadFromFile("assets/shoot.wav"))    m_sndShoot.emplace(m_sbShoot);
+    if(m_sbHit.loadFromFile("assets/hit.wav"))        m_sndHit.emplace(m_sbHit);
+    if(m_sbDead.loadFromFile("assets/dead.wav"))      m_sndDead.emplace(m_sbDead);
+    if(m_sbPowerup.loadFromFile("assets/powerup.wav")) m_sndPowerup.emplace(m_sbPowerup);
     if(m_bgm.openFromFile("assets/bgm.ogg"))
     {
         m_bgm.setLooping(true);   // SFML 3: setLoop -> setLooping
@@ -62,6 +64,26 @@ sf::Text GameClient::makeText(const std::string& s, unsigned size, sf::Color col
 sf::Color GameClient::skinColor(uint8_t skin) const
 {
     return SKIN_COLORS[skin % SKIN_COUNT];
+}
+
+sf::Color GameClient::powerupColor(PowerupType t) const
+{
+    switch(t){
+        case PowerupType::SPEED:     return sf::Color(0, 220, 255);
+        case PowerupType::RAPIDFIRE: return sf::Color(255, 100, 0);
+        case PowerupType::SHIELD:    return sf::Color(100, 255, 100);
+        default:                     return sf::Color::White;
+    }
+}
+
+std::string GameClient::powerupName(PowerupType t) const
+{
+    switch(t){
+        case PowerupType::SPEED:     return "Speed Boost";
+        case PowerupType::RAPIDFIRE: return "Rapid Fire";
+        case PowerupType::SHIELD:    return "Shield";
+        default:                     return "Unknown";
+    }
 }
 
 std::string GameClient::pidName(uint8_t pid) const
@@ -87,8 +109,9 @@ void GameClient::generateObstacles(uint32_t seed)
     }
 }
 
-
+// ════════════════════════════════════════════════════════════════════════════
 // Main loop
+// ════════════════════════════════════════════════════════════════════════════
 void GameClient::run()
 {
     sf::RenderWindow window(
@@ -175,8 +198,9 @@ void GameClient::run()
     m_net.send(&d,sizeof(d));
 }
 
-
+// ════════════════════════════════════════════════════════════════════════════
 // Packet processing
+// ════════════════════════════════════════════════════════════════════════════
 void GameClient::processPackets()
 {
     Envelope e;
@@ -191,7 +215,13 @@ void GameClient::processPackets()
                     PktConnectAck a; memcpy(&a,e.buf,sizeof(a));
                     if(!a.denied){ m_pid=a.pid; m_net.m_pid=a.pid; m_net.m_connected=true;
                         m_phase=ClientPhase::LOBBY;
-                        std::cout<<"[Client] Connected as pid "<<(int)m_pid<<"\n"; }
+                        std::cout<<"[Client] Connected as pid "<<(int)m_pid<<"\n";
+                        // Init voice chat now that we know our pid
+                        if(!m_voiceInit){
+                            m_voice.init(m_pid, [this](const void* d, int l){ m_net.send(d,l); });
+                            m_voiceInit = true;
+                        }
+                    }
                 } break;
 
             case PktType::LOBBY_STATE:
@@ -213,6 +243,8 @@ void GameClient::processPackets()
                     m_mapSeed=gs.mapSeed;
                     generateObstacles(m_mapSeed);
                     m_phase=ClientPhase::IN_GAME;
+                    m_lastSeq   = 0;
+                    m_gameState = PktGameState{};  // cleared; server sends immediate state
                     if(m_audioOk) m_bgm.play();
                 } break;
 
@@ -251,6 +283,24 @@ void GameClient::processPackets()
                     memcpy(&m_matchOver,e.buf,sizeof(m_matchOver));
                     m_phase=ClientPhase::MATCH_OVER;
                     if(m_audioOk) m_bgm.stop();
+                } break;
+
+            case PktType::POWERUP_COLLECT:
+                if(e.len>=(int)sizeof(PktPowerupCollect)){
+                    PktPowerupCollect pc; memcpy(&pc,e.buf,sizeof(pc));
+                    if(m_sndPowerup) m_sndPowerup->play();
+                    // Add chat notification
+                    std::string note = "*** " + pidName(pc.pid) + " picked up " + powerupName(pc.ptype) + "! ***";
+                    m_chatHistory.push_back(note);
+                    if((int)m_chatHistory.size()>MAX_CHAT_HIST) m_chatHistory.pop_front();
+                } break;
+
+            case PktType::VOICE_DATA:
+                if(e.len>=(int)(sizeof(PktType)+sizeof(uint8_t)+sizeof(uint16_t))){
+                    uint8_t  vpid = e.buf[1];
+                    uint16_t vlen = 0; memcpy(&vlen, e.buf+2, 2);
+                    if(vlen>0 && vlen<=VOICE_MAX_BYTES && e.len>=(int)(4+vlen))
+                        m_voice.feedIncoming(vpid, e.buf+4, vlen);
                 } break;
 
             case PktType::CHAT:
@@ -292,8 +342,9 @@ void GameClient::processPackets()
     }
 }
 
-
+// ════════════════════════════════════════════════════════════════════════════
 // Input
+// ════════════════════════════════════════════════════════════════════════════
 void GameClient::sendInput(sf::RenderWindow& /*w*/)
 {
     if(m_chatActive) return;
@@ -307,12 +358,17 @@ void GameClient::sendInput(sf::RenderWindow& /*w*/)
     inp.fire    = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Space) ? 1:0;
     m_net.send(&inp,sizeof(inp));
 
-    // Dead-reckoning on client
+    // Push-to-talk voice
+    bool talking = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::V);
+    m_voice.setTalking(talking);
+    m_voice.tick();
+
     m_stateAge += m_dt;
 }
 
-
+// ════════════════════════════════════════════════════════════════════════════
 // Draw helpers
+// ════════════════════════════════════════════════════════════════════════════
 void GameClient::drawConnecting(sf::RenderWindow& w)
 {
     if(!m_fontLoaded) return;
@@ -478,6 +534,7 @@ void GameClient::drawObstacles(sf::RenderWindow& w)
 void GameClient::drawTank(sf::RenderWindow& w, const PlayerState& ps, uint8_t pid)
 {
     if(!ps.alive) return;
+    if(pid < MAX_PLAYERS && !m_lobby.slots[pid].active) return;
     sf::Color col = skinColor(ps.skin);
 
     // Body
@@ -504,6 +561,20 @@ void GameClient::drawTank(sf::RenderWindow& w, const PlayerState& ps, uint8_t pi
         w.draw(pip);
     }
 
+    // Buff icons below tank
+    uint8_t buffs = m_gameState.buffs[pid];
+    float bx = ps.x - 18.f;
+    for(int b=0;b<3;b++){
+        if(buffs & (1<<b)){
+            sf::CircleShape bi(5.f);
+            bi.setOrigin({5.f,5.f});
+            bi.setPosition({bx, ps.y + TANK_RADIUS + 8.f});
+            bi.setFillColor(powerupColor((PowerupType)b));
+            w.draw(bi);
+            bx += 14.f;
+        }
+    }
+
     // Name tag
     if(m_fontLoaded){
         auto tag = makeText(pidName(pid),14,sf::Color::White);
@@ -520,6 +591,44 @@ void GameClient::drawBullet(sf::RenderWindow& w, const BulletState& bs)
     c.setPosition({bs.x,bs.y});
     c.setFillColor(sf::Color::Yellow);
     w.draw(c);
+}
+
+void GameClient::drawPowerup(sf::RenderWindow& w, const PowerupState& ps)
+{
+    if(!ps.active) return;
+    sf::Color col = powerupColor(ps.ptype);
+
+    // Outer glow ring
+    sf::CircleShape ring(POWERUP_RADIUS + 4.f);
+    ring.setOrigin({POWERUP_RADIUS+4.f, POWERUP_RADIUS+4.f});
+    ring.setPosition({ps.x, ps.y});
+    ring.setFillColor(sf::Color::Transparent);
+    ring.setOutlineThickness(3.f);
+    ring.setOutlineColor(sf::Color(col.r, col.g, col.b, 160));
+    w.draw(ring);
+
+    // Inner circle
+    sf::CircleShape c(POWERUP_RADIUS);
+    c.setOrigin({POWERUP_RADIUS, POWERUP_RADIUS});
+    c.setPosition({ps.x, ps.y});
+    c.setFillColor(sf::Color(col.r, col.g, col.b, 200));
+    w.draw(c);
+
+    // Letter label
+    if(m_fontLoaded){
+        std::string label;
+        switch(ps.ptype){
+            case PowerupType::SPEED:     label = "S"; break;
+            case PowerupType::RAPIDFIRE: label = "R"; break;
+            case PowerupType::SHIELD:    label = "P"; break;
+        }
+        sf::Text t(m_font, label, 14);
+        t.setFillColor(sf::Color::White);
+        auto b = t.getLocalBounds();
+        t.setOrigin({b.size.x/2.f, b.size.y/2.f});
+        t.setPosition({ps.x, ps.y - 4.f});
+        w.draw(t);
+    }
 }
 
 void GameClient::drawHUD(sf::RenderWindow& w)
@@ -541,7 +650,9 @@ void GameClient::drawHUD(sf::RenderWindow& w)
     y=10.f;
     for(int i=0;i<MAX_PLAYERS;i++){
         if(!m_lobby.slots[i].active) continue;
-        std::string s = std::string(m_lobby.slots[i].name)+": "+std::to_string(m_roundWins[i])+" wins";
+        // This ensures we only read up to 15 characters, stopping at the first null terminator
+        std::string playerName(m_lobby.slots[i].name, strnlen(m_lobby.slots[i].name, 15));
+        std::string s = playerName + " - " + std::to_string(m_roundWins[i]) + " round wins";
         auto t=makeText(s,16,sf::Color::White);
         auto b=t.getLocalBounds();
         t.setPosition({WIN_W-b.size.x-10.f,y}); w.draw(t);
@@ -572,6 +683,7 @@ void GameClient::drawChat(sf::RenderWindow& w)
 void GameClient::drawInGame(sf::RenderWindow& w)
 {
     drawObstacles(w);
+    for(auto& p:m_gameState.powerups) drawPowerup(w,p);
     for(int i=0;i<MAX_PLAYERS;i++)    drawTank(w,m_gameState.players[i],(uint8_t)i);
     for(auto& b:m_gameState.bullets)  drawBullet(w,b);
     drawHUD(w);
@@ -579,7 +691,11 @@ void GameClient::drawInGame(sf::RenderWindow& w)
 
     // Controls reminder (small, bottom)
     if(m_fontLoaded){
-        auto h=makeText("WASD=Move  Space=Fire  Enter=Chat",14,sf::Color(80,80,80));
+        bool talking = m_voice.isTalking();
+        std::string hint = "WASD=Move  Space=Fire  Enter=Chat  V=Voice";
+        sf::Color hcol = talking ? sf::Color(100,255,100) : sf::Color(80,80,80);
+        std::string voiceStatus = talking ? "  [MIC ON]" : "";
+        auto h=makeText(hint + voiceStatus, 14, hcol);
         h.setPosition({10.f,WIN_H-18.f}); w.draw(h);
     }
 }
@@ -600,7 +716,8 @@ void GameClient::drawRoundOver(sf::RenderWindow& w)
     float y=WIN_H/2.f;
     for(int i=0;i<MAX_PLAYERS;i++){
         if(!m_lobby.slots[i].active) continue;
-        std::string s=std::string(m_lobby.slots[i].name)+" — "+std::to_string(m_roundWins[i])+" round wins";
+        std::string playerName(m_lobby.slots[i].name, strnlen(m_lobby.slots[i].name, 15));
+        std::string s = playerName + " - " + std::to_string(m_roundWins[i]) + " round wins";
         auto rt=makeText(s,22,skinColor(m_gameState.players[i].skin));
         rt.setPosition({WIN_W/2.f-180.f,y}); w.draw(rt);
         y+=30.f;
