@@ -26,8 +26,6 @@ run setup.bat
 Open at least 2 terminal windows. One can run the server, the others can join.
 Otherwise, can start the game with just 1 player, and add bots in the lobby.
 
-```
-
 ## Controls
 
 | Key | Action |
