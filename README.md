@@ -28,73 +28,66 @@ Otherwise, can start the game with just 1 player, and add bots in the lobby.
 
 ```
 
----
-
 ## Controls
 
 | Key | Action |
 |---|---|
-| W / S | Move forward / back |
-| A / D | Rotate left / right |
-| Space | Fire |
-| R | Toggle ready (lobby) |
-| O | Open skin shop (lobby) |
-| Enter | Open / send chat |
-| Esc | Close chat / back |
-| V | Toggle voice chat |
-| P | Add bot (admin only) |
+| **W / S** | Move forward / back |
+| **A / D** | Rotate left / right |
+| **Space** | Fire |
+| **R** | Toggle ready (lobby) |
+| **B** | Open skin shop (lobby) |
+| **P** | Add Bot (Admin/Host only) |
+| **Enter** | Open / send chat |
+| **Esc** | Close chat / back |
+| **V** | Toggle voice chat |
 
 ---
 
 ## Game Flow
 
-1. Enter username, join or create game. 
-2. Players connect - **Lobby** screen shows all players, their level and win count, host is able to add and kick bots/players.
-3. Each player presses **R** to ready up
-4. Once all players are ready (minimum 2), game starts automatically
-5. **Round**: last tank standing wins the round. First to **3 round wins** wins the match
-6. **Match Over** screen shows kills, XP/coins gained, and the **global leaderboard**
-7. Server returns to lobby, with player data still persisting in `players.json`
+1. **Entry**: Enter username, then join an existing game via the browser or create a new one.
+2. **Lobby**: View all players, their levels, and win counts.
+3. **Admin Tools**: The Host can press **P** to add bots or click the **X** next to a name to kick players/bots.
+4. **Ready Up**: Each player presses **R** to toggle ready status.
+5. **Start**: Once all players are ready (minimum 2), the game starts automatically.
+6. **Match**: Last tank standing wins the round. First to **3 round wins** takes the match.
+7. **Persistence**: Post-match stats show XP/Coins gained; data persists in `players.json`.
 
 ---
 
 ## Progression & Shop
 
-- **XP**: +50 per kill, +100 for match win - levels up every 200 XP
-- **Coins**: +20 per kill, +50 for match win - spend in shop
-- **Skins**: 5 tank colours, unlocked in shop (press O in lobby)
-  - Army Green: free (default)
+- **XP**: +50 per kill, +100 for match win. Level up every 200 XP.
+- **Coins**: +20 per kill, +50 for match win. Spend in the shop.
+- **Skins**: 6 tank colors unlocked in shop (Press **B** in lobby):
+  - Army Green: Free (Default)
   - Camo: 40 coins
   - Desert: 80 coins
   - Arctic: 120 coins
   - Stealth: 160 coins
   - Gold: 200 coins
-- All data saved to `players.json` next to the server exe
 
 ---
 
-## Audio 
+## Audio
 
 | File | When played | Credits |
 |---|---|---|
-| `shoot.wav` | Tank fires | https://freesound.org/people/LittleRobotSoundFactory/sounds/270336/ |
-| `hit.wav` | Tank takes damage | https://freesound.org/people/LittleRobotSoundFactory/sounds/270332/ |
-| `dead.wav` | Tank destroyed | https://freesound.org/people/thehorriblejoke/sounds/259962/ | 
-| `powerup.wav` | Background music (loops) | https://freesound.org/people/Prof.Mudkip/sounds/422089/ |
-| `bgm.ogg` | Background music (loops) | https://freesound.org/people/josefpres/sounds/655186/ |
+| `shoot.wav` | Tank fires | [Link](https://freesound.org/people/LittleRobotSoundFactory/sounds/270336/) |
+| `hit.wav` | Tank takes damage | [Link](https://freesound.org/people/LittleRobotSoundFactory/sounds/270332/) |
+| `dead.wav` | Tank destroyed | [Link](https://freesound.org/people/thehorriblejoke/sounds/259962/) |
+| `powerup.wav` | Powerup collected | [Link](https://freesound.org/people/Prof.Mudkip/sounds/422089/) |
+| `bgm.ogg` | Background music | [Link](https://freesound.org/people/josefpres/sounds/655186/) |
 
 ---
 
 ## Network Architecture
 
-- **UDP only** (Winsock2, non-blocking) - no TCP anywhere
-- **Client-Server**: server owns all physics, collision, scoring, and persistence
-- Clients send `PktInput` every frame; server broadcasts `PktGameState` at 20 Hz
-- Packet types: CONNECT - CONNECT_ACK - LOBBY_STATE - GAME_START - INPUT / GAME_STATE / BULLET_SPAWN / PLAYER_HIT / PLAYER_DEAD - ROUND_OVER - MATCH_OVER
-- **Disconnect handling**: timed-out clients (30s no packet) are removed gracefully; their tank is killed; other players continue unaffected
-- **Out-of-order protection**: `PktGameState` and `PktInput` carry sequence numbers; stale packets are discarded
-
----
+- **UDP Only**: Built on Winsock2 with no-blocking sockets.
+- **Authoritative Server**: Server handles physics, collisions, scoring, and A* pathfinding.
+- **State Sync**: Server broadcasts game state at 20 Hz; clients use sequence numbers to discard stale packets.
+- **Resiliency**: 30-second timeout detection removes disconnected clients gracefully.
 
 ## Project Structure
 
@@ -142,14 +135,3 @@ Obstacles randomly generated each match from a shared seed (deterministic across
 [Client B]INPUT-->|---[Server: physics/collision/scoring/persistence]-->STATE-->[All Clients]
 [Client C]INPUT-->|
 ```
-
-### Synchronization Strategy
-- Server is authoritative for all state
-- Clients dead-reckon locally between 20 Hz state broadcasts
-- Bullet spawns, hits, deaths sent as discrete reliable-style events (broadcast immediately)
-- Map generated deterministically from shared seed - no need to sync obstacle state
-
-### Durable Communication
-- Non-blocking UDP with 30-second timeout detection
-- Disconnected players removed cleanly; game continues
-- Sequence numbers prevent out-of-order state application
