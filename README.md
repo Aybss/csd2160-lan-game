@@ -133,3 +133,40 @@ Obstacles randomly generated each match from a shared seed (deterministic across
 [Client B]INPUT-->|---[Server: physics/collision/scoring/persistence]-->STATE-->[All Clients]
 [Client C]INPUT-->|
 ```
+
+# Features
+
+| Category | Item | Purpose |
+|---|---|---|
+| Networking | Winsock2 (UDP) |Raw UDP socket transport for all game packets; TCP is strictly prohibited. |
+|   | Non-blocking Sockets | Uses FIONBIO to poll server/client without stalling the game loop. |
+|   | UDP Broadcast | LAN discovery where the server announces presence and clients scan for hosts. |
+|   | Custom Protocol | Packed structs (#pragma pack) over UDP with a type byte as the first field. |
+|   | Sequence Numbers | Input and game-state packets carry seq to reject old/out-of-order data. |
+|   | Keepalive / Timeout | Client pings every 5s; server drops silent clients after 90s for graceful disconnects. |
+| Rendering | SFML 3 Engine | Window creation, event loop, and draw calls for a polished multiplayer experience. |
+|   | sf::View (Letterbox) | Scales logical canvas to any window size with black bars via makeLetterboxView. |
+|   | Follow-Cam | Game world view centered on the player tank at 0.55× zoom for immersive play. |
+|   | Spectator View | Full-map fit-to-screen view when dead; includes armored screen-space border. |
+|   | Procedural Skins | Off-screen sf::RenderTexture generation for tracks, rivets, and camo patterns at startup. |
+| Game Logic | Tank Physics | Angular rotation and forward/back movement with AABB obstacle collision. |
+|   | AABB Collision | Detection for Tank-Obstacle, Bullet-Obstacle, Bullet-Tank, and Barrel-Bullet. |
+|   | Powerup System | Speed (1.8×), Rapid Fire (0.15s CD), and Shield (absorbs one hit) with timed buffs. |
+|   | Explosive Barrels | Chain-reaction AoE damage within a specific radius for tactical play.
+|   | Round/Match System | First to 3 round wins takes the match; includes clear end-of-game flow. |
+| Map Gen | Seeded srand | Same seed on server/client guarantees identical obstacle layouts across all screens. |
+|   | Symmetric Placement | Obstacles mirrored across all four quadrants for a balanced competitive layout. |
+|   | Classification | Size thresholds distinguish trees, walls, and boulders for unique rendering styles. |
+| AI | Seek-and-Shoot FSM | Re-targets nearest human every ~0.5s; handles turning, advancing, ad firing. |
+|   | Angle Steering|   | atan2 calculation for heading; handles left/right inputs from angle differences. |
+|   | Edge Avoidance|   | Forces a turn+forward command when the bot detects map boundaries. |
+Persistence | Hand-rolled JSON | "Flat-file player records including XP, currency, level, and owned skins. |
+|   | XP/Coin Awards | Kill and win rewards computed on server and written to players.json |
+|   | Leaderboard | Top-5 by total wins sorted on server and sent in PktMatchOver. |
+Audio | SFML Audio| Integration of BGM and SFX with volume control. |
+|   | Opus Voice Chat | 24kbps compression with discontinuous transmission and jitter buffer. |
+| UI | LAN Browser | Broadcasts PktServerQuery and collects PktServerAnnounce replies. |
+|   | Kill-Cam / Replay | Circular buffer of 180 snapshots; plays back at 0.5× speed on round end. |
+|   | Spectator Cycling | Dead players cycle through living targets via keyboard or < > buttons. |
+Scene Management | Persistent Window | Single sf::RenderWindow shared across all screens to prevent flicker. |
+|   | Phase State Machine | ClientPhase enum drives which draw/update functions run each frame. |
