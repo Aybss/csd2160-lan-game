@@ -328,30 +328,160 @@ void GameClient::generateObstacles(uint32_t seed)
     m_obstacles.push_back({ (MAP_W - 200.f) * 0.5f, (MAP_H - 200.f) * 0.5f, 200.f, 200.f });
 }
 
+static sf::View makeLetterboxView(unsigned winW, unsigned winH)
+{
+    float logW = (float)WIN_W;
+    float logH = (float)WIN_H;
+    float winAR = (float)winW / (float)winH;
+    float logAR = logW / logH;
+
+    sf::FloatRect vp;
+    if (winAR > logAR)
+    {
+        // Window wider than logical: black bars on left/right
+        float scale = (float)winH / logH;
+        float vpW   = (logW * scale) / (float)winW;
+        vp = sf::FloatRect({ (1.f - vpW) * 0.5f, 0.f }, { vpW, 1.f });
+    }
+    else
+    {
+        // Window taller than logical: black bars on top/bottom
+        float scale = (float)winW / logW;
+        float vpH   = (logH * scale) / (float)winH;
+        vp = sf::FloatRect({ 0.f, (1.f - vpH) * 0.5f }, { 1.f, vpH });
+    }
+
+    sf::View v(sf::FloatRect({ 0.f, 0.f }, { logW, logH }));
+    v.setViewport(vp);
+    return v;
+}
+
 // Main loop
 
-void GameClient::run()
+void GameClient::run(sf::RenderWindow& window)
 {
-    sf::RenderWindow window(sf::VideoMode({ (unsigned)WIN_W,(unsigned)WIN_H }), "TankNet - " + m_username);
-    window.setFramerateLimit(60);
-    sf::Clock clock;
+    window.setTitle("TankArena - " + m_username);
+    auto sz = window.getSize();
+    sf::View lbView = makeLetterboxView(sz.x, sz.y);
+    m_lbView = lbView;
+    window.setView(lbView);
 
+    sf::Clock clock;
     PktConnect conn; strncpy(conn.name, m_username.c_str(), 15);
     m_net.send(&conn, sizeof(conn));
 
-    while (window.isOpen())
+    bool shouldReturn = false;
+    while (window.isOpen() && !shouldReturn)
     {
         while (const auto ev = window.pollEvent())
         {
-            if (ev->is<sf::Event::Closed>()) window.close();
+            if (ev->is<sf::Event::Closed>()) { window.close(); return; }
+            if (const auto* rs = ev->getIf<sf::Event::Resized>())
+            {
+                lbView = makeLetterboxView(rs->size.x, rs->size.y);
+                m_lbView = lbView;
+                window.setView(lbView);
+            }
+
             if (const auto* kp = ev->getIf<sf::Event::KeyPressed>())
             {
                 if (kp->code == sf::Keyboard::Key::Escape)
                 {
-                    if (m_phase == ClientPhase::DISCONNECTED) window.close();
-                    else if (m_chatActive) { m_chatActive = false; m_chatInput.clear(); }
-                    else if (m_phase == ClientPhase::LOBBY || m_phase == ClientPhase::IN_GAME || m_phase == ClientPhase::ROUND_OVER)
+                    if (m_phase == ClientPhase::DISCONNECTED)
+                        shouldReturn = true;
+                    else if (m_chatActive)
+                    { m_chatActive = false; m_chatInput.clear(); }
+                    else if (m_phase == ClientPhase::LOBBY || m_phase == ClientPhase::IN_GAME
+                          || m_phase == ClientPhase::ROUND_OVER)
                         m_pauseOpen = !m_pauseOpen;
+                }
+            }
+
+            if (!m_pauseOpen &&
+                (m_phase == ClientPhase::LOBBY || m_phase == ClientPhase::IN_GAME))
+            {
+                if (const auto* kp = ev->getIf<sf::Event::KeyPressed>())
+                {
+                    if (kp->code == sf::Keyboard::Key::Enter && m_phase == ClientPhase::LOBBY)
+                    {
+                        if (m_chatActive) {
+                            if (!m_chatInput.empty()) {
+                                PktChat c; c.pid = m_pid;
+                                strncpy(c.msg, m_chatInput.c_str(), MAX_CHAT_MSG - 1);
+                                m_net.send(&c, sizeof(c));
+                                m_chatInput.clear();
+                            }
+                            m_chatActive = false;
+                        } else m_chatActive = true;
+                    }
+                    if (kp->code == sf::Keyboard::Key::Backspace && m_chatActive && !m_chatInput.empty())
+                        m_chatInput.pop_back();
+                }
+                if (m_chatActive)
+                    if (const auto* te = ev->getIf<sf::Event::TextEntered>())
+                    {
+                        char c = (char)te->unicode;
+                        if (c >= 32 && c < 127 && m_chatInput.size() < MAX_CHAT_MSG - 1)
+                            m_chatInput += c;
+                    }
+            }
+
+            // Spectate target cycling — keyboard arrows OR mouse click on < > buttons
+            if (m_phase == ClientPhase::IN_GAME &&
+                m_pid < MAX_PLAYERS && !m_gameState.players[m_pid].alive)
+            {
+                // Keyboard cycling
+                if (const auto* kp = ev->getIf<sf::Event::KeyPressed>())
+                {
+                    if (kp->code == sf::Keyboard::Key::Left || kp->code == sf::Keyboard::Key::Comma)
+                    {
+                        int start = (m_spectateTarget == 0xFF) ? MAX_PLAYERS - 1 : (int)m_spectateTarget - 1;
+                        for (int i = start; i >= 0; i--)
+                            if (m_lobby.slots[i].active && m_gameState.players[i].alive && i != (int)m_pid)
+                            { m_spectateTarget = (uint8_t)i; break; }
+                    }
+                    if (kp->code == sf::Keyboard::Key::Right || kp->code == sf::Keyboard::Key::Period)
+                    {
+                        int start = (m_spectateTarget == 0xFF) ? 0 : (int)m_spectateTarget + 1;
+                        for (int i = start; i < MAX_PLAYERS; i++)
+                            if (m_lobby.slots[i].active && m_gameState.players[i].alive && i != (int)m_pid)
+                            { m_spectateTarget = (uint8_t)i; break; }
+                    }
+                }
+
+                // Mouse click on < > buttons — use m_lbView to convert to logical coords
+                if (const auto* mb = ev->getIf<sf::Event::MouseButtonReleased>())
+                {
+                    if (mb->button == sf::Mouse::Button::Left)
+                    {
+                        sf::Vector2f lp = window.mapPixelToCoords(
+                            sf::Vector2i(mb->position.x, mb->position.y), m_lbView);
+
+                        // Button layout mirrors drawInGame
+                        const float btnY = 47.f, btnW = 30.f, btnH = 30.f;
+                        const float lX = (float)WIN_W * 0.5f - 165.f;
+                        const float rX = (float)WIN_W * 0.5f + 135.f;
+
+                        auto inBtn = [&](float bx) {
+                            return lp.x >= bx && lp.x <= bx + btnW &&
+                                   lp.y >= btnY && lp.y <= btnY + btnH;
+                        };
+
+                        if (inBtn(lX))  // < button
+                        {
+                            int start = (m_spectateTarget == 0xFF) ? MAX_PLAYERS - 1 : (int)m_spectateTarget - 1;
+                            for (int i = start; i >= 0; i--)
+                                if (m_lobby.slots[i].active && m_gameState.players[i].alive && i != (int)m_pid)
+                                { m_spectateTarget = (uint8_t)i; break; }
+                        }
+                        if (inBtn(rX))  // > button
+                        {
+                            int start = (m_spectateTarget == 0xFF) ? 0 : (int)m_spectateTarget + 1;
+                            for (int i = start; i < MAX_PLAYERS; i++)
+                                if (m_lobby.slots[i].active && m_gameState.players[i].alive && i != (int)m_pid)
+                                { m_spectateTarget = (uint8_t)i; break; }
+                        }
+                    }
                 }
             }
         }
@@ -359,32 +489,7 @@ void GameClient::run()
         m_dt = clock.restart().asSeconds();
         m_dt = std::min(m_dt, 0.05f);
 
-        if (m_phase == ClientPhase::IN_GAME && !m_playingKillCam)
-        {
-            Snapshot sn;
-            for (int i = 0; i < MAX_PLAYERS; i++) {
-                sn.x[i] = m_gameState.players[i].x;
-                sn.y[i] = m_gameState.players[i].y;
-                sn.angle[i] = m_gameState.players[i].angle;
-                sn.alive[i] = m_gameState.players[i].alive;
-            }
-            m_killCamBuffer.push_back(sn);
-            if (m_killCamBuffer.size() > 180) m_killCamBuffer.erase(m_killCamBuffer.begin());
-        }
-
-        if (m_playingKillCam)
-        {
-            m_killCamTimer += m_dt;
-            if (m_killCamTimer > 4.0f) {
-                m_playingKillCam = false;
-                m_killCamTimer = 0.f;
-                m_killCamBuffer.clear();
-            }
-        }
-
-        m_net.poll();
-        processPackets();
-
+        // Keepalive ping so server doesn't time us out when window is unfocused
         m_keepaliveTimer += m_dt;
         if (m_keepaliveTimer >= 5.f)
         {
@@ -396,10 +501,59 @@ void GameClient::run()
             }
         }
 
+        // Voice chat runs in all phases
         m_voice.setTalking(!m_pauseOpen && sf::Keyboard::isKeyPressed(sf::Keyboard::Key::V));
         m_voice.tick();
 
-        window.clear(sf::Color(15, 15, 25));
+        // Retry connect
+        if (m_phase == ClientPhase::CONNECTING)
+        {
+            m_keepaliveTimer += m_dt;
+            if (m_keepaliveTimer > 1.5f) {
+                PktConnect conn2; strncpy(conn2.name, m_username.c_str(), 15);
+                m_net.send(&conn2, sizeof(conn2));
+                m_keepaliveTimer = 0.f;
+            }
+        }
+
+        // --- KILL CAM RECORDING ---
+        if (m_phase == ClientPhase::IN_GAME && !m_playingKillCam) {
+            Snapshot sn;
+            for (int i = 0; i < MAX_PLAYERS; i++) {
+                sn.x[i] = m_gameState.players[i].x;
+                sn.y[i] = m_gameState.players[i].y;
+                sn.angle[i] = m_gameState.players[i].angle;
+                sn.alive[i] = m_gameState.players[i].alive;
+            }
+            m_killCamBuffer.push_back(sn);
+            if (m_killCamBuffer.size() > 180) m_killCamBuffer.erase(m_killCamBuffer.begin());
+        }
+
+        if (m_playingKillCam) {
+            m_killCamTimer += m_dt;
+            float totalSequenceTime = (3.0f / 0.5f) + 1.5f; // Duration/Speed + Pause
+            if (m_killCamTimer > totalSequenceTime) {
+                m_playingKillCam = false;
+                m_killCamTimer = 0.f;
+                m_killCamBuffer.clear();
+            }
+        }
+
+        m_net.poll();
+        processPackets();
+
+        if (m_phase == ClientPhase::DISCONNECTED && m_returnToMenu) {
+            m_returnToMenu = false;
+            shouldReturn = true;
+        }
+
+        window.clear(sf::Color::Black);
+        window.setView(lbView);
+
+        sf::RectangleShape bg({ (float)WIN_W,(float)WIN_H });
+        bg.setFillColor(sf::Color(15, 15, 25));
+        window.draw(bg);
+
         switch (m_phase)
         {
         case ClientPhase::CONNECTING:   drawConnecting(window);  break;
@@ -410,6 +564,8 @@ void GameClient::run()
         case ClientPhase::MATCH_OVER:   drawMatchOver(window);  break;
         case ClientPhase::DISCONNECTED: drawDisconnected(window); break;
         }
+
+        window.setView(lbView);
         if (m_pauseOpen) drawPauseMenu(window);
         window.display();
     }
@@ -1452,13 +1608,13 @@ void GameClient::drawInGame(sf::RenderWindow& w)
             for (auto& b : m_gameState.bullets)  drawBullet(w, b);
             drawExplosions(w);
             drawBorder(w);
-            w.setView(w.getDefaultView());
+            w.setView(m_lbView);
             drawScreenBorder(w, MARGIN);
         }
     }
 
     // 3. UI OVERLAYS (SCREEN SPACE)
-    w.setView(w.getDefaultView());
+    w.setView(m_lbView);
     drawHUD(w);
     drawMinimap(w);
     drawChat(w);
@@ -1492,8 +1648,10 @@ void GameClient::drawInGame(sf::RenderWindow& w)
         auto drawBtn = [&](float x, float y, const std::string& txt) {
             sf::RectangleShape b({ btnW, btnH });
             b.setPosition({ x, y });
-            auto mp = sf::Mouse::getPosition(w);
-            bool hov = (mp.x >= x && mp.x <= x + btnW && mp.y >= y && mp.y <= y + btnH);
+            // Map physical mouse position to logical coords through the current view
+            auto physMp = sf::Mouse::getPosition(w);
+            auto logPt  = w.mapPixelToCoords(physMp);
+            bool hov = (logPt.x >= x && logPt.x <= x + btnW && logPt.y >= y && logPt.y <= y + btnH);
             b.setFillColor(hov ? sf::Color(100, 100, 100) : sf::Color(50, 50, 50));
             b.setOutlineThickness(1.f);
             b.setOutlineColor(sf::Color::White);
@@ -1719,7 +1877,7 @@ void GameClient::drawPauseMenu(sf::RenderWindow& w)
     div.setPosition({CX+30.f, CY+58.f});
     w.draw(div);
 
-    auto mp = sf::Mouse::getPosition(w);
+    auto mp = w.mapPixelToCoords(sf::Mouse::getPosition(w), m_lbView);
     bool lmbDown = sf::Mouse::isButtonPressed(sf::Mouse::Button::Left);
 
     //  Generic slider helper 

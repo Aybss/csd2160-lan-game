@@ -58,6 +58,32 @@ static const sf::Color PANEL_BRD {35,   45,  65, 255};
 static const sf::Color GOLD_COL  {230, 180,  40, 255};
 
 
+static sf::View g_menuView;
+
+static void updateMenuView(sf::RenderWindow& w)
+{
+    float winW = (float)w.getSize().x;
+    float winH = (float)w.getSize().y;
+    float logW = (float)MW, logH = (float)MH;
+    float winAR = winW / winH, logAR = logW / logH;
+    sf::FloatRect vp;
+    if (winAR > logAR)
+    {
+        float scale = winH / logH;
+        float vpW = (logW * scale) / winW;
+        vp = sf::FloatRect(sf::Vector2f((1.f - vpW) * 0.5f, 0.f), sf::Vector2f(vpW, 1.f));
+    }
+    else
+    {
+        float scale = winW / logW;
+        float vpH = (logH * scale) / winH;
+        vp = sf::FloatRect(sf::Vector2f(0.f, (1.f - vpH) * 0.5f), sf::Vector2f(1.f, vpH));
+    }
+    g_menuView = sf::View(sf::FloatRect(sf::Vector2f(0.f, 0.f), sf::Vector2f(logW, logH)));
+    g_menuView.setViewport(vp);
+    w.setView(g_menuView);
+}
+
 // Draw helpers
 
 static sf::Text mkT(const std::string& s, unsigned sz,
@@ -88,11 +114,11 @@ static void drawRect(sf::RenderWindow& w,
 }
 
 static bool isHov(const sf::RenderWindow& w,
-                  float x, float y, float bw, float bh)
+    float x, float y, float bw, float bh)
 {
-    auto mp = sf::Mouse::getPosition(w);
-    return mp.x >= (int)x && mp.x <= (int)(x+bw) &&
-           mp.y >= (int)y && mp.y <= (int)(y+bh);
+    sf::Vector2f mp = w.mapPixelToCoords(sf::Mouse::getPosition(w));
+    return mp.x >= x && mp.x <= x + bw &&
+        mp.y >= y && mp.y <= y + bh;
 }
 
 static void drawButton(sf::RenderWindow& w,
@@ -176,6 +202,9 @@ static std::string screenUsername(sf::RenderWindow& w)
         while (const auto ev = w.pollEvent())
         {
             if (ev->is<sf::Event::Closed>()) { w.close(); return ""; }
+            
+            if (const auto* rs = ev->getIf<sf::Event::Resized>())
+                updateMenuView(w);
 
             if (const auto* te = ev->getIf<sf::Event::TextEntered>())
             {
@@ -213,6 +242,7 @@ static std::string screenUsername(sf::RenderWindow& w)
         }
 
         w.clear(BG_DARK);
+        updateMenuView(w);
         drawGrid(w);
 
         float ta = elapsed * 18.f;
@@ -282,8 +312,12 @@ static MenuChoice screenMainMenu(sf::RenderWindow& w, const std::string& usernam
 
     while (w.isOpen())
     {
-        while (const auto ev = w.pollEvent())
+        while (const auto ev = w.pollEvent()) {
             if (ev->is<sf::Event::Closed>()) { w.close(); return MenuChoice::NONE; }
+
+            if (const auto* rs = ev->getIf<sf::Event::Resized>())
+                updateMenuView(w);
+        }
 
         float ta = clk.getElapsedTime().asSeconds() * 22.f;
         bool lmbNow  = sf::Mouse::isButtonPressed(sf::Mouse::Button::Left);
@@ -305,6 +339,7 @@ static MenuChoice screenMainMenu(sf::RenderWindow& w, const std::string& usernam
         }
 
         w.clear(BG_DARK);
+        updateMenuView(w);
         drawGrid(w);
         drawMiniTank(w, 110.f,    MH/2.f, {0,200,140,50},  ta,  0.45f);
         drawMiniTank(w, MW-110.f, MH/2.f, {30,160,255,50}, -ta, 0.45f);
@@ -393,6 +428,9 @@ screenBrowser(sf::RenderWindow& w, const std::string& /*username*/)
         while (const auto ev = w.pollEvent())
         {
             if (ev->is<sf::Event::Closed>()) return {"",0};
+            
+            if (const auto* rs = ev->getIf<sf::Event::Resized>())
+                updateMenuView(w);
 
             if (const auto* kp = ev->getIf<sf::Event::KeyPressed>())
             {
@@ -449,6 +487,7 @@ screenBrowser(sf::RenderWindow& w, const std::string& /*username*/)
 
         //  Draw 
         w.clear(BG_DARK);
+        updateMenuView(w);
         drawGrid(w);
 
         if (g_fontLoaded)
@@ -578,76 +617,58 @@ screenBrowser(sf::RenderWindow& w, const std::string& /*username*/)
 
 // main
 //int main(int argc, char* argv[]){
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd){
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow){
     loadFont();
 
-    // Ask username once — persists across reconnects
-    std::string username;
-    {
-        sf::RenderWindow window(
-            sf::VideoMode({(unsigned)MW, (unsigned)MH}),
-            "TankArena",
-            sf::Style::Titlebar | sf::Style::Close);
-        window.setFramerateLimit(60);
-        username = screenUsername(window);
-        if (username.empty() || !window.isOpen()) return 0;
-        if ((int)username.size() > 15) username = username.substr(0, 15);
-    }
+    // Create the window ONCE at the start
+    sf::RenderWindow window(
+        sf::VideoMode({ (unsigned)MW, (unsigned)MH }),
+        "TankArena",
+        sf::Style::Default);          // Default = Titlebar | Resize | Close
+    window.setFramerateLimit(60);
+    window.setMinimumSize(sf::Vector2u((unsigned)MW / 2, (unsigned)MH / 2));
 
-    // After GameClient exits (leave/disconnect) we come back here
-    while (true)
-    {
-        sf::RenderWindow window(
-            sf::VideoMode({(unsigned)MW, (unsigned)MH}),
-            "TankArena",
-            sf::Style::Titlebar | sf::Style::Close);
-        window.setFramerateLimit(60);
+    // Initial Username Screen
+    std::string username = screenUsername(window);
+    if (username.empty() || !window.isOpen()) return 0;
+    if ((int)username.size() > 15) username = username.substr(0, 15);
 
+    while (window.isOpen())
+    {
+        // ScreenMainMenu now takes the existing window
         MenuChoice choice = screenMainMenu(window, username);
-        if (!window.isOpen() || choice == MenuChoice::NONE) return 0;
 
-        std::string  serverIp   = "127.0.0.1";
-        uint16_t     serverPort = NET_PORT;
+        if (!window.isOpen() || choice == MenuChoice::NONE) break;
+
+        std::string serverIp = "127.0.0.1";
+        uint16_t serverPort = NET_PORT;
 
         if (choice == MenuChoice::JOIN)
         {
             auto [ip, port] = screenBrowser(window, username);
-            if (!window.isOpen()) return 0;
-            if (ip.empty()) continue;   // user backed out - re-show menu
-            serverIp   = ip;
+            if (!window.isOpen()) break;
+            if (ip.empty()) continue;
+            serverIp = ip;
             serverPort = port;
-            window.close();
         }
-        else  // CREATE
+        else // CREATE
         {
-            window.close();
-
-            // Only spawn the server thread once per process lifetime
             static bool s_serverStarted = false;
             if (!s_serverStarted)
             {
-                std::thread([]()
-                {
+                std::thread([]() {
                     try { GameServer srv(NET_PORT); srv.run(); }
-                    catch (const std::exception& ex)
-                    { std::cerr << "[Server] Fatal: " << ex.what() << "\n"; }
-                }).detach();
+                    catch (...) { /* handle error */ }
+                    }).detach();
                 s_serverStarted = true;
                 std::this_thread::sleep_for(std::chrono::milliseconds(350));
             }
-            serverIp   = "127.0.0.1";
-            serverPort = NET_PORT;
-            std::cout << "[Launcher] Server started, joining as client...\n";
         }
 
-        // Run game — when player leaves or gets disconnected, run() returns
-        try
-        {
-            std::cout << "[Launcher] Connecting to "
-                      << serverIp << ":" << serverPort
-                      << " as " << username << "\n";
+        // Run GameClient using the SAME window
+        try {
             GameClient cli(serverIp, serverPort, username);
-            cli.run();
+            cli.run(window); // Pass the window reference here
         }
         catch (const std::exception& ex)
         {

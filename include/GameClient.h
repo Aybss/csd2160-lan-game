@@ -17,7 +17,7 @@ class GameClient
 {
 public:
     GameClient(const std::string& serverIp, uint16_t port, const std::string& username);
-    void run();
+    void run(sf::RenderWindow& window);
 
 private:
     ClientNet   m_net;
@@ -83,6 +83,9 @@ private:
     float m_dt = 0.f;
 
     uint8_t m_spectateTarget = 0xFF; // 0xFF means ALL (whole map). for spectating
+
+    bool  m_returnToMenu = false;
+    sf::View m_lbView;   // letterbox view, updated on resize, used by HUD draws
 
     //  Pause menu 
     bool  m_pauseOpen  = false;
