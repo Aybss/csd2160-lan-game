@@ -13,6 +13,7 @@ constexpr int   MAP_OFFSET_Y    = 0;
 
 //  Gameplay 
 constexpr int   MAX_PLAYERS     = 6;
+constexpr int   MAX_BULLETS     = 18; // cap for server and client
 constexpr int   MIN_PLAYERS     = 2;   // min to start
 constexpr float TANK_SPEED      = 160.f;
 constexpr float TANK_ROT_SPEED  = 140.f;  // degrees/sec
@@ -22,7 +23,7 @@ constexpr float BULLET_RADIUS   = 5.f;
 constexpr float BULLET_LIFETIME = 3.f;   // seconds
 constexpr int   TANK_MAX_HP     = 3;
 constexpr int   ROUNDS_TO_WIN   = 3;
-constexpr int   XP_PER_KILL     = 50;
+ constexpr int   XP_PER_KILL     = 50;
 constexpr int   XP_PER_WIN      = 100;
 constexpr int   COINS_PER_KILL  = 20;
 constexpr int   COINS_PER_WIN   = 50;

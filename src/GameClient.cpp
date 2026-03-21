@@ -525,6 +525,14 @@ void GameClient::run(sf::RenderWindow& window)
                 sn.angle[i] = m_gameState.players[i].angle;
                 sn.alive[i] = m_gameState.players[i].alive;
             }
+
+            // Record Bullet Data
+            for (int i = 0; i < MAX_BULLETS; i++) {
+                sn.bullets[i].x = m_gameState.bullets[i].x;
+                sn.bullets[i].y = m_gameState.bullets[i].y;
+                sn.bullets[i].active = m_gameState.bullets[i].active;
+            }
+
             m_killCamBuffer.push_back(sn);
             if (m_killCamBuffer.size() > 180) m_killCamBuffer.erase(m_killCamBuffer.begin());
         }
@@ -1547,20 +1555,37 @@ void GameClient::drawInGame(sf::RenderWindow& w)
 
     if (m_playingKillCam && !m_killCamBuffer.empty())
     {
-        // 1. REPLAY RENDERING
+        // 1. CALCULATE PROGRESS
         float playbackTime = m_killCamTimer * PLAYBACK_SPEED;
         float progress = std::min(1.0f, playbackTime / 3.0f);
         size_t frameIdx = (size_t)(progress * (m_killCamBuffer.size() - 1));
         Snapshot& sn = m_killCamBuffer[frameIdx];
 
+        // 2. CONFIGURE CAMERA (Center on winner)
         float camX = (m_killCamWinnerPid != -1) ? sn.x[m_killCamWinnerPid] : (float)MAP_W * 0.5f;
         float camY = (m_killCamWinnerPid != -1) ? sn.y[m_killCamWinnerPid] : (float)MAP_H * 0.5f;
 
-        sf::View replayView(sf::Vector2f(camX, camY), sf::Vector2f(WIN_W * 0.50f, WIN_H * 0.50f));
-        w.setView(replayView);
+        sf::View replayView;
+        replayView.setCenter(sf::Vector2f(camX, camY));
+        replayView.setSize(sf::Vector2f(WIN_W * 0.50f, WIN_H * 0.50f));
+        w.setView(replayView); // Set the camera FIRST
 
+        // 3. DRAW WORLD
         drawBackground(w);
         drawObstacles(w);
+
+        // 4. DRAW RECORDED PROJECTILES
+        for (int i = 0; i < MAX_BULLETS; i++) {
+            if (sn.bullets[i].active) {
+                BulletState tempBs;
+                tempBs.x = sn.bullets[i].x;
+                tempBs.y = sn.bullets[i].y;
+                tempBs.active = true;
+                drawBullet(w, tempBs);
+            }
+        }
+
+        // 5. DRAW RECORDED TANKS
         for (int i = 0; i < MAX_PLAYERS; i++) {
             if (!sn.alive[i] || !m_lobby.slots[i].active) continue;
             PlayerState tempPs;
@@ -1568,6 +1593,7 @@ void GameClient::drawInGame(sf::RenderWindow& w)
             tempPs.alive = sn.alive[i]; tempPs.hp = 3; tempPs.skin = m_lobby.slots[i].skin;
             drawTank(w, tempPs, (uint8_t)i);
         }
+
         drawBorder(w);
     }
     else

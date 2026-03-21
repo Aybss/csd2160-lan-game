@@ -127,21 +127,28 @@ private:
     void loadAssets();
     void generateSkinTextures();
 
+    struct BulletSnapshot {
+        float x, y;
+        bool active;
+    };
+
     struct Snapshot {
         float x[MAX_PLAYERS];
         float y[MAX_PLAYERS];
         float angle[MAX_PLAYERS];
         bool alive[MAX_PLAYERS];
+        BulletSnapshot bullets[MAX_BULLETS];
     };
+
     std::vector<Snapshot> m_killCamBuffer;
     bool m_playingKillCam = false;
     float m_killCamTimer = 0.f;
     int m_killCamWinnerPid = -1;
 
     // Control settings
-    const float REPLAY_DURATION = 5.0f; // Total time for the sequence
+    const float REPLAY_DURATION = 7.5f; // Total time for the sequence
     const float PLAYBACK_SPEED = 0.5f;   // 0.5 = Half speed (Slow motion)
-    const float POST_REPLAY_PAUSE = 10.5f; // Extra time to freeze on the final frame
+    const float POST_REPLAY_PAUSE = 1.5f; // Extra time to freeze on the final frame
 
     sf::Color   skinColor(uint8_t skin) const;
     sf::Color   powerupColor(PowerupType t) const;
