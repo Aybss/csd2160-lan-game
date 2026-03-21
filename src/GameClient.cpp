@@ -779,7 +779,7 @@ void GameClient::sendInput(sf::RenderWindow& w)
 
         if (lmbNow && !lmbWasDown)
         {
-            auto mp = sf::Mouse::getPosition(w);
+            auto mp = w.mapPixelToCoords(sf::Mouse::getPosition(w), m_lbView);
             // Button geometry (must match drawing logic)
             const float btnY = 47.f, btnW = 30.f, btnH = 30.f;
             const float lX = WIN_W * 0.5f - 165.f;
@@ -995,7 +995,7 @@ void GameClient::drawLobby(sf::RenderWindow& w)
             float xSize = 30.f;
 
             // Check hover/click
-            auto mp = sf::Mouse::getPosition(w);
+            auto mp = w.mapPixelToCoords(sf::Mouse::getPosition(w), m_lbView);
             bool hov = (mp.x >= xX && mp.x <= xX + xSize && mp.y >= xY && mp.y <= xY + xSize);
 
             sf::RectangleShape kickBtn({ xSize, xSize });
@@ -2049,7 +2049,7 @@ void GameClient::drawDisconnected(sf::RenderWindow& w)
     // "Return to Menu" button
     const float BW=220.f, BH=44.f;
     const float BX=WIN_W*0.5f-BW*0.5f, BY=CY+145.f;
-    auto mp = sf::Mouse::getPosition(w);
+    auto mp = w.mapPixelToCoords(sf::Mouse::getPosition(w), m_lbView);
     bool hov = mp.x>=(int)BX && mp.x<=(int)(BX+BW) &&
                mp.y>=(int)BY && mp.y<=(int)(BY+BH);
     sf::RectangleShape btn({BW,BH});
