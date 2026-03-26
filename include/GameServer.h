@@ -123,6 +123,7 @@ private:
     bool allReady() const;
     void startGame();
     void announcePresence(const sockaddr_in* replyTo = nullptr);  // UDP broadcast/unicast for LAN discovery
+    void handlePlayerListReq(const sockaddr_in& from);           // respond with registered player records
 
     void updateGame(float dt);
     void checkBulletCollisions();

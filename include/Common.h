@@ -115,8 +115,10 @@ enum class PktType : uint8_t
     ACK             = 42,
 
     // LAN Discovery
-    SERVER_ANNOUNCE = 70,   // server-broadcast: "I exist"
-    SERVER_QUERY    = 71,   // client-broadcast: "who's there?"
+    SERVER_ANNOUNCE   = 70,  // server-broadcast: "I exist"
+    SERVER_QUERY      = 71,  // client-broadcast: "who's there?"
+    PLAYER_LIST_REQ   = 72,  // client->server: request registered player list
+    PLAYER_LIST_RESP  = 73,  // server->client: batch of registered player records
 
     // Admin / bot
     ADD_BOT         = 80,   // host-server: add a bot player
@@ -384,6 +386,21 @@ struct PktServerQuery
 {
     PktType type = PktType::SERVER_QUERY;
 };
+
+struct PktPlayerListEntry
+{
+    char name[16]{};
+    char authKeyHex[65]{}; // 64 hex chars + null
+    char saltHex[33]{};    // 32 hex chars + null
+}; // 114 bytes
+
+struct PktPlayerListResp
+{
+    PktType          type    = PktType::PLAYER_LIST_RESP;
+    uint8_t          count   = 0; // entries in this packet (max 8)
+    uint8_t          isLast  = 1; // 1 = final packet in this response
+    PktPlayerListEntry entries[8];
+}; // 3 + 8*114 = 915 bytes
 
 //  Auth mode
 enum class AuthMode : uint8_t

@@ -141,7 +141,8 @@ void GameServer::handlePacket(const Envelope& e)
             PktDisconnect p; memcpy(&p,e.buf,sizeof(p)); handleDisconnect(p.pid); } break;
         case PktType::PING:          { PktType pong=PktType::PONG_PKT; m_net.sendTo(e.buf[1],&pong,1); } break;
         case PktType::VOICE_DATA:    handleVoice(e); break;
-        case PktType::SERVER_QUERY:  announcePresence(&e.from); break;
+        case PktType::SERVER_QUERY:      announcePresence(&e.from); break;
+        case PktType::PLAYER_LIST_REQ:   handlePlayerListReq(e.from); break;
         case PktType::ADD_BOT:       if(e.len>=(int)sizeof(PktAddBot)){
             PktAddBot p; memcpy(&p,e.buf,sizeof(p)); handleAddBot(p); } break;
         case PktType::KICK_BOT:
@@ -1019,6 +1020,30 @@ void GameServer::sendProfileUpdate(uint8_t pid)
     pu.xp=r.xp; pu.level=r.level; pu.coins=r.coins;
     pu.ownedSkins=r.ownedSkins; pu.totalWins=r.totalWins;
     m_net.sendTo(pid,&pu,sizeof(pu));
+}
+
+void GameServer::handlePlayerListReq(const sockaddr_in& from)
+{
+    const auto& all = m_db.all();
+    size_t total = all.size();
+    size_t sent  = 0;
+    while (sent < total || total == 0)
+    {
+        PktPlayerListResp pkt;
+        pkt.count = 0;
+        for (int i = 0; i < 8 && sent < total; i++, sent++)
+        {
+            const auto& r = all[sent];
+            if (r.authKey.empty()) { continue; } // skip unregistered
+            auto& e = pkt.entries[pkt.count++];
+            strncpy(e.name,       r.name.c_str(),       15); e.name[15]      = '\0';
+            strncpy(e.authKeyHex, r.authKey.c_str(),    64); e.authKeyHex[64]= '\0';
+            strncpy(e.saltHex,    r.salt.c_str(),       32); e.saltHex[32]   = '\0';
+        }
+        pkt.isLast = (sent >= total) ? 1 : 0;
+        m_net.sendToAddr(from, &pkt, sizeof(pkt));
+        if (total == 0) break; // nothing to send
+    }
 }
 
 void GameServer::announcePresence(const sockaddr_in* replyTo)

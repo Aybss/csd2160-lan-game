@@ -15,8 +15,10 @@
 #include <atomic>
 #include <chrono>
 #include <future>
+#include <mutex>
 #include <string>
 #include <vector>
+#include <map>
 #include <algorithm>
 #include <iostream>
 
@@ -31,6 +33,14 @@
 
 static sf::Font g_font;
 static bool     g_fontLoaded = false;
+
+// Remote player cache — populated by background fetch during mode-select screen
+struct CachedPlayer { std::string authKeyHex; std::string saltHex; };
+static std::mutex                          g_playerCacheMtx;
+static std::map<std::string, CachedPlayer> g_playerCache;
+static std::atomic<bool>                   g_playerCacheReady{false};
+
+static void launchPlayerListFetch(); // forward declaration — defined before localCheckLogin
 
 static void loadFont()
 {
@@ -196,6 +206,9 @@ static AuthMode screenModeSelect(sf::RenderWindow& w)
     sf::Clock clk;
     bool lmbWasDown = true;
 
+    // Fire background LAN scan + player-list fetch so the login form has data ready
+    launchPlayerListFetch();
+
     while (w.isOpen())
     {
         while (const auto ev = w.pollEvent())
@@ -270,24 +283,113 @@ static AuthMode screenModeSelect(sf::RenderWindow& w)
 // Draws a single input field and returns the updated string (not used directly;
 // logic is inlined below to keep each screen self-contained).
 
+// Fetch the registered-player list from a server (run on a background thread).
+// Sends PLAYER_LIST_REQ to server_ip:port, collects PLAYER_LIST_RESP for up to 600ms.
+static void fetchPlayerList(const std::string& serverIp, uint16_t port)
+{
+    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == INVALID_SOCKET) return;
+    u_long nb = 1; ioctlsocket(sock, FIONBIO, &nb);
+
+    // Send PLAYER_LIST_REQ
+    uint8_t req = (uint8_t)PktType::PLAYER_LIST_REQ;
+    sockaddr_in dest{};
+    dest.sin_family = AF_INET;
+    dest.sin_port   = htons(port);
+    inet_pton(AF_INET, serverIp.c_str(), &dest.sin_addr);
+    sendto(sock, (const char*)&req, 1, 0, (sockaddr*)&dest, sizeof(dest));
+
+    // Collect responses
+    std::map<std::string, CachedPlayer> tmp;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(600);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        uint8_t buf[sizeof(PktPlayerListResp)];
+        sockaddr_in from{}; int fl = sizeof(from);
+        int r = recvfrom(sock, (char*)buf, sizeof(buf), 0, (sockaddr*)&from, &fl);
+        if (r >= 3 && buf[0] == (uint8_t)PktType::PLAYER_LIST_RESP)
+        {
+            PktPlayerListResp pkt{};
+            memcpy(&pkt, buf, std::min((int)sizeof(pkt), r));
+            for (int i = 0; i < pkt.count && i < 8; i++)
+            {
+                pkt.entries[i].name[15]       = '\0';
+                pkt.entries[i].authKeyHex[64] = '\0';
+                pkt.entries[i].saltHex[32]    = '\0';
+                std::string n = pkt.entries[i].name;
+                if (!n.empty())
+                    tmp[n] = { pkt.entries[i].authKeyHex, pkt.entries[i].saltHex };
+            }
+            if (pkt.isLast) break;
+        }
+        else std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    closesocket(sock);
+
+    { std::lock_guard<std::mutex> lk(g_playerCacheMtx); g_playerCache = std::move(tmp); }
+    g_playerCacheReady.store(true);
+}
+
+// Kick off a background scan+fetch so the cache is ready before the login form is shown.
+static void launchPlayerListFetch()
+{
+    std::thread([](){
+        auto servers = scanLAN(NET_PORT, 900);
+        if (!servers.empty())
+            fetchPlayerList(servers[0].ip, servers[0].port);
+        else
+        {
+            // No server found — try local players.json as fallback
+            Persistence db;
+            if (db.load())
+            {
+                std::map<std::string, CachedPlayer> tmp;
+                for (const auto& r : db.all())
+                    if (!r.authKey.empty())
+                        tmp[r.name] = { r.authKey, r.salt };
+                std::lock_guard<std::mutex> lk(g_playerCacheMtx);
+                g_playerCache = std::move(tmp);
+            }
+            g_playerCacheReady.store(true);
+        }
+    }).detach();
+}
+
 // Local-only password check (runs in a thread to keep UI live during Argon2id).
-// Returns "" if credentials are valid (or if no local record — server will decide),
-// or an error message string if the password is definitely wrong.
+// Returns "" if credentials are valid (or if no record anywhere — server will decide),
+// or an error message string if the password is definitely wrong / name not found.
 static std::string localCheckLogin(const std::string& name, const std::string& password)
 {
-    Persistence db;
-    if (!db.load()) return ""; // no local db — let the server handle it
-    auto* rec = db.find(name);
-    if (!rec || rec->authKey.empty()) return "Not registered. Use Register.";
-    if (rec->salt.empty()) return ""; // malformed record — let server handle
+    // Prefer the remote cache (populated by launchPlayerListFetch)
+    std::string authKeyHex, saltHex;
+    if (g_playerCacheReady.load())
+    {
+        std::lock_guard<std::mutex> lk(g_playerCacheMtx);
+        auto it = g_playerCache.find(name);
+        if (it == g_playerCache.end()) return "Not registered. Use Register.";
+        authKeyHex = it->second.authKeyHex;
+        saltHex    = it->second.saltHex;
+    }
+    else
+    {
+        // Cache not ready yet — fall back to local players.json
+        Persistence db;
+        if (!db.load()) return "";
+        auto* rec = db.find(name);
+        if (!rec || rec->authKey.empty()) return "";
+        authKeyHex = rec->authKey;
+        saltHex    = rec->salt;
+    }
+
+    if (saltHex.empty()) return ""; // malformed — let server handle
 
     uint8_t saltBin[crypto_pwhash_SALTBYTES]{};
     size_t decoded = 0;
     if (sodium_hex2bin(saltBin, sizeof(saltBin),
-                       rec->salt.c_str(), rec->salt.size(),
+                       saltHex.c_str(), saltHex.size(),
                        nullptr, &decoded, nullptr) != 0 ||
         decoded != crypto_pwhash_SALTBYTES)
-        return ""; // bad salt — let server handle
+        return "";
 
     uint8_t derived[32]{};
     if (crypto_pwhash(derived, 32,
@@ -300,7 +402,7 @@ static std::string localCheckLogin(const std::string& name, const std::string& p
 
     std::string derivedHex = Persistence::bytesToHex(derived, 32);
     sodium_memzero(derived, sizeof(derived));
-    return (derivedHex == rec->authKey) ? "" : "Incorrect password.";
+    return (derivedHex == authKeyHex) ? "" : "Incorrect password.";
 }
 
 // Screen 2a – Login
