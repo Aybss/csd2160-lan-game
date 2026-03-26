@@ -61,6 +61,8 @@ bool Persistence::load(const std::string& path)
         r.ownedSkins = (uint8_t)extractNum(line,"ownedSkins");
         r.totalWins  = (uint16_t)extractNum(line,"totalWins");
         r.totalKills = (uint16_t)extractNum(line,"totalKills");
+        r.authKey    = extractStr(line,"authKey");
+        r.salt       = extractStr(line,"salt");
         if(!r.name.empty()) m_records.push_back(r);
     }
     std::cout<<"[DB] Loaded "<<m_records.size()<<" players.\n";

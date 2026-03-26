@@ -634,6 +634,7 @@ void GameClient::processPackets()
                 {
                     m_authError = "Key exchange failed (invalid server key)";
                     m_authFailed = true;
+                    m_returnToMenu = true;
                     m_disconnectMsg = m_authError;
                     m_phase = ClientPhase::DISCONNECTED;
                     break;
@@ -737,6 +738,7 @@ void GameClient::processPackets()
                         {
                             m_authError = "Bad salt from server";
                             m_authFailed = true;
+                            m_returnToMenu = true;
                             m_disconnectMsg = m_authError;
                             m_phase = ClientPhase::DISCONNECTED;
                             break;
@@ -753,6 +755,7 @@ void GameClient::processPackets()
                         {
                             m_authError = "Key derivation failed (out of memory?)";
                             m_authFailed = true;
+                            m_returnToMenu = true;
                             m_disconnectMsg = m_authError;
                             m_phase = ClientPhase::DISCONNECTED;
                             break;
@@ -1187,8 +1190,7 @@ void GameClient::drawLobby(sf::RenderWindow& w)
         }
 
         std::string line = std::string(sl.name) +
-            "  Lv." + std::to_string(sl.level) +
-            "  Wins:" + std::to_string(sl.wins) +
+            (sl.isAnonymous ? "  [Guest]" : ("  Lv." + std::to_string(sl.level) + "  Wins:" + std::to_string(sl.wins))) +
             (sl.ready ? "  [READY]" : "") +
             (sl.isBot ? "  [BOT]" : "");
         // Crown icon for admin

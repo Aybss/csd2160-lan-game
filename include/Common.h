@@ -159,6 +159,7 @@ struct LobbySlot
     uint16_t level   = 0;
     uint16_t wins    = 0;
     uint8_t  isBot   = 0;   // 1 if this slot is a server-controlled bot
+    uint8_t  isAnonymous = 0; // 1 if this slot is a guest (stats not saved)
 };
 
 struct PktLobbyState
@@ -436,7 +437,7 @@ struct PktAuthResponse
 struct PktAuthResult
 {
     PktType type = PktType::AUTH_RESULT;
-    uint8_t result = 0; // 0=ok, 1=bad_credentials, 2=name_taken, 3=game_in_progress, 4=lobby_full
+    uint8_t result = 0; // 0=ok, 1=bad_credentials, 2=name_taken, 3=game_in_progress, 4=lobby_full, 5=guest_name_in_use
     uint8_t pid = 0xFF; // assigned pid on success
     char reason[32]{};
 };

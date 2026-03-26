@@ -372,6 +372,15 @@ void GameServer::handleAuthResponse(const Envelope &e, PendingAuth pa,
 
     if (resp.mode == AuthMode::ANONYMOUS)
     {
+        // Reject if the chosen name is already active in the lobby
+        for (int i = 0; i < MAX_PLAYERS; i++)
+        {
+            if (m_lobby[i].active && strncmp(m_lobby[i].name, resp.name, 15) == 0)
+            {
+                sendResult(5, 0xFF, "Name already in use. Choose another.");
+                return;
+            }
+        }
         uint8_t pid = registerPlayerInLobby(e.from, resp.name, true, m_now);
         if (pid == 0xFF) { sendResult(4, 0xFF, "Lobby full"); return; }
 
@@ -540,7 +549,8 @@ void GameServer::broadcastLobbyState()
         ls.slots[i].ready  = m_lobby[i].ready;
         ls.slots[i].skin   = m_lobby[i].skin;
         ls.slots[i].isBot  = m_lobby[i].isBot ? 1 : 0;
-        if(m_lobby[i].active && !m_lobby[i].isBot){
+        ls.slots[i].isAnonymous = m_lobby[i].isAnonymous ? 1 : 0;
+        if(m_lobby[i].active && !m_lobby[i].isBot && !m_lobby[i].isAnonymous){
             auto& r = m_db.getOrCreate(m_lobby[i].name);
             ls.slots[i].level = r.level;
             ls.slots[i].wins  = r.totalWins;
