@@ -10,6 +10,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <SFML/Graphics.hpp>
+#include <sodium.h>
 #include <thread>
 #include <atomic>
 #include <chrono>
@@ -188,39 +189,59 @@ static void drawTitleBar(sf::RenderWindow& w, float y = 38.f)
 
 // Screen 1 – Username entry
 
-static std::string screenUsername(sf::RenderWindow& w)
+static AuthInfo screenLogin(sf::RenderWindow& w, std::string& username,
+                            const std::string& prefillError = "")
 {
-    std::string name;
-    std::string errorMsg;
+    std::string name     = username;
+    std::string password;
+    std::string errorMsg = prefillError;
+    AuthMode    selMode  = AuthMode::ANONYMOUS;
+    bool        showPw   = false;
+    bool        nameFocus = true;
     sf::Clock   clk;
     // Start true so any button held before this screen opened doesn't fire immediately
     bool        lmbWasDown = true;
+
+    auto tryConfirm = [&]() -> bool {
+        if (name.empty()) { errorMsg = "Enter a name first."; nameFocus = true; return false; }
+        if (showPw && password.empty()) { errorMsg = "Enter a password."; nameFocus = false; return false; }
+        return true;
+    };
 
     while (w.isOpen())
     {
         // SFML 3 event loop
         while (const auto ev = w.pollEvent())
         {
-            if (ev->is<sf::Event::Closed>()) { w.close(); return ""; }
-            
+            if (ev->is<sf::Event::Closed>()) { w.close(); return {}; }
+
             if (const auto* rs = ev->getIf<sf::Event::Resized>())
                 updateMenuView(w);
 
             if (const auto* te = ev->getIf<sf::Event::TextEntered>())
             {
                 uint32_t c = te->unicode;
-                if (c == 8 && !name.empty()) { name.pop_back(); errorMsg.clear(); }
-                else if (c >= 32 && c < 127 && (int)name.size() < 15)
-                { name += (char)c; errorMsg.clear(); }
+                if (nameFocus || !showPw) {
+                    if (c == 8 && !name.empty())     { name.pop_back(); errorMsg.clear(); }
+                    else if (c >= 32 && c < 127 && (int)name.size() < 15)
+                    { name += (char)c; errorMsg.clear(); }
+                } else {
+                    if (c == 8 && !password.empty()) { password.pop_back(); errorMsg.clear(); }
+                    else if (c >= 32 && c < 127 && password.size() < 64)
+                    { password += (char)c; errorMsg.clear(); }
+                }
             }
 
             if (const auto* kp = ev->getIf<sf::Event::KeyPressed>())
             {
+                if (kp->code == sf::Keyboard::Key::Tab && showPw)
+                    nameFocus = !nameFocus;
                 if (kp->code == sf::Keyboard::Key::Enter)
                 {
-                    if (!name.empty()) return name;
-                    errorMsg = "Please enter a name first.";
+                    if (tryConfirm()) { username = name; return AuthInfo{selMode, password}; }
                 }
+                if (kp->code == sf::Keyboard::Key::Escape && showPw)
+                { showPw = false; password.clear(); nameFocus = true; errorMsg.clear(); }
             }
         }
 
@@ -231,14 +252,34 @@ static std::string screenUsername(sf::RenderWindow& w)
 
         // Layout
         float cW = 420.f, cX = (MW-cW)*0.5f, cY = 170.f;
-        float ibX = cX+30.f, ibY = cY+62.f, ibW = cW-60.f, ibH = 46.f;
-        float btnX = ibX, btnY = cY+138.f;
-        bool hovBtn = isHov(w, btnX, btnY, ibW, 46.f);
+        float ibX = cX+30.f, ibW = cW-60.f;
+        float ibY = cY+62.f, ibH = 46.f;
+        // Mode buttons – 3 equal columns below the name field
+        float mbY = ibY+ibH+12.f, mbH = 46.f, mbW = (ibW-16.f)/3.f;
+        float mb1X = ibX, mb2X = mb1X+mbW+8.f, mb3X = mb2X+mbW+8.f;
+        // Password row (visible only after Login / Register pressed)
+        float pwY = mbY+mbH+14.f, pwH = 46.f;
+        float cfY = pwY+pwH+10.f, cfH = 46.f;
+        float panelH = showPw ? (cfY+cfH+14.f-cY) : (mbY+mbH+14.f-cY);
 
-        if (lmbFire && hovBtn)
+        bool hN  = isHov(w, ibX, ibY, ibW, ibH);
+        bool hM1 = isHov(w, mb1X, mbY, mbW, mbH);
+        bool hM2 = isHov(w, mb2X, mbY, mbW, mbH);
+        bool hM3 = isHov(w, mb3X, mbY, mbW, mbH);
+        bool hCf = showPw && isHov(w, ibX, cfY, ibW, cfH);
+
+        if (lmbFire)
         {
-            if (!name.empty()) return name;
-            errorMsg = "Please enter a name first.";
+            if (hN) nameFocus = true;
+            if (hM1) { selMode = AuthMode::LOGIN;    showPw = true;  nameFocus = false; password.clear(); errorMsg.clear(); }
+            if (hM2) { selMode = AuthMode::REGISTER; showPw = true;  nameFocus = false; password.clear(); errorMsg.clear(); }
+            if (hM3)
+            {
+                if (name.empty()) { errorMsg = "Please enter a name first."; }
+                else { username = name; return AuthInfo{AuthMode::ANONYMOUS, ""}; }
+            }
+            if (hCf && tryConfirm()) { username = name; return AuthInfo{selMode, password}; }
+            if (showPw && isHov(w, ibX, pwY, ibW, pwH)) nameFocus = false;
         }
 
         w.clear(BG_DARK);
@@ -255,20 +296,22 @@ static std::string screenUsername(sf::RenderWindow& w)
 
         if (g_fontLoaded)
         {
-            drawRect(w, cX, cY, cW, 220.f, BG_PANEL, PANEL_BRD, 1.5f);
+            drawRect(w, cX, cY, cW, panelH, BG_PANEL, PANEL_BRD, 1.5f);
 
             auto sub = mkT("Enter your call sign", 15, TXT_DIM);
             centerX(sub, cX, cW); sub.setPosition({sub.getPosition().x, cY+20.f});
             w.draw(sub);
 
-            drawRect(w, ibX, ibY, ibW, ibH, {14,18,28,255}, ACCENT, 1.5f);
+            // Name field
+            bool nameSel = (nameFocus || !showPw);
+            drawRect(w, ibX, ibY, ibW, ibH, {14,18,28,255}, nameSel ? ACCENT : PANEL_BRD, nameSel ? 2.f : 1.5f);
             auto nameT = mkT(name.empty() ? "Type name..." : name, 22,
                              name.empty() ? TXT_DIM : sf::Color::White);
             nameT.setPosition({ibX+12.f, ibY+9.f});
             w.draw(nameT);
 
             // Blinking cursor
-            if (!name.empty() && (int)(elapsed*2.2f) % 2 == 0)
+            if (nameSel && !name.empty() && (int)(elapsed*2.2f) % 2 == 0)
             {
                 auto b = nameT.getLocalBounds();
                 sf::RectangleShape cur({2.f, 22.f});
@@ -280,23 +323,75 @@ static std::string screenUsername(sf::RenderWindow& w)
             auto cc = mkT(std::to_string((int)name.size())+"/15", 12, TXT_DIM);
             cc.setPosition({ibX+ibW-34.f, ibY+ibH+4.f}); w.draw(cc);
 
+            // Mode buttons
+            bool s1 = (showPw && selMode == AuthMode::LOGIN);
+            drawRect(w, mb1X, mbY, mbW, mbH,
+                     (hM1||s1) ? sf::Color{0,175,115,255} : sf::Color{22,30,46,255}, PANEL_BRD, 1.5f);
+            { auto l = mkT("Login",    17, (hM1||s1) ? sf::Color::Black : ACCENT);  l.setStyle(sf::Text::Bold);
+              centerX(l, mb1X, mbW); l.setPosition({l.getPosition().x, mbY+8.f});  w.draw(l);
+              auto s = mkT("saved stats", 12, (hM1||s1) ? sf::Color{30,30,30,255} : TXT_DIM);
+              centerX(s, mb1X, mbW); s.setPosition({s.getPosition().x, mbY+28.f}); w.draw(s); }
+
+            bool s2 = (showPw && selMode == AuthMode::REGISTER);
+            drawRect(w, mb2X, mbY, mbW, mbH,
+                     (hM2||s2) ? sf::Color{0,120,200,255} : sf::Color{22,30,46,255}, PANEL_BRD, 1.5f);
+            { auto l = mkT("Register", 17, (hM2||s2) ? sf::Color::Black : ACCENT2); l.setStyle(sf::Text::Bold);
+              centerX(l, mb2X, mbW); l.setPosition({l.getPosition().x, mbY+8.f});  w.draw(l);
+              auto s = mkT("new account", 12, (hM2||s2) ? sf::Color{30,30,30,255} : TXT_DIM);
+              centerX(s, mb2X, mbW); s.setPosition({s.getPosition().x, mbY+28.f}); w.draw(s); }
+
+            drawRect(w, mb3X, mbY, mbW, mbH,
+                     hM3 ? sf::Color{80,80,100,255} : sf::Color{18,22,34,255}, PANEL_BRD, 1.5f);
+            { auto l = mkT("Anon",     17, hM3 ? sf::Color::White : TXT_DIM);
+              centerX(l, mb3X, mbW); l.setPosition({l.getPosition().x, mbY+8.f});  w.draw(l);
+              auto s = mkT("no saves",  12, TXT_DIM);
+              centerX(s, mb3X, mbW); s.setPosition({s.getPosition().x, mbY+28.f}); w.draw(s); }
+
+            // Password row
+            if (showPw)
+            {
+                bool pwSel = !nameFocus;
+                auto pl = mkT(selMode == AuthMode::LOGIN ? "Password:" : "Choose a password:", 13, TXT_DIM);
+                pl.setPosition({ibX, pwY-18.f}); w.draw(pl);
+
+                drawRect(w, ibX, pwY, ibW, pwH, {14,18,28,255}, pwSel ? ACCENT2 : PANEL_BRD, pwSel ? 2.f : 1.5f);
+                std::string masked(password.size(), '*');
+                auto pwT = mkT(password.empty() ? "Type password..." : masked, 22,
+                               password.empty() ? TXT_DIM : sf::Color::White);
+                pwT.setPosition({ibX+12.f, pwY+9.f});
+                w.draw(pwT);
+
+                if (pwSel && !password.empty() && (int)(elapsed*2.2f) % 2 == 0)
+                {
+                    auto pb = pwT.getLocalBounds();
+                    sf::RectangleShape cur({2.f, 22.f});
+                    cur.setFillColor(ACCENT2);
+                    cur.setPosition({ibX+12.f + pb.size.x + 3.f, pwY+11.f});
+                    w.draw(cur);
+                }
+
+                bool canCf = !name.empty() && !password.empty();
+                drawButton(w, ibX, cfY, ibW, cfH,
+                           selMode == AuthMode::LOGIN ? "LOGIN   Enter" : "REGISTER   Enter",
+                           hCf && canCf,
+                           canCf ? sf::Color{24,34,50,255} : sf::Color{14,18,28,255},
+                           selMode == AuthMode::LOGIN ? sf::Color{0,200,140,255} : sf::Color{0,140,220,255});
+
+                auto hint = mkT("Tab to switch fields  \xc2\xb7  Esc to go back", 12, TXT_DIM);
+                centerX(hint, cX, cW);
+                hint.setPosition({hint.getPosition().x, cfY+cfH+4.f}); w.draw(hint);
+            }
+
             if (!errorMsg.empty())
             {
                 auto et = mkT(errorMsg, 13, ERR_COL);
-                et.setPosition({ibX, ibY+ibH+4.f}); w.draw(et);
+                et.setPosition({ibX, cY+panelH+6.f}); w.draw(et);
             }
-
-            drawButton(w, btnX, btnY, ibW, 46.f, "CONFIRM   Enter",
-                       hovBtn, {24,34,50,255}, {0,200,140,255});
-
-            auto hint = mkT("Press Enter or click Confirm to continue", 13, TXT_DIM);
-            centerX(hint, cX, cW);
-            hint.setPosition({hint.getPosition().x, cY+200.f}); w.draw(hint);
         }
 
         w.display();
     }
-    return "";
+    return {};
 }
 
 
@@ -476,9 +571,9 @@ screenBrowser(sf::RenderWindow& w, const std::string& /*username*/)
                 return {servers[sel].ip, servers[sel].port};
 
             // Row selection
-            auto mp = sf::Mouse::getPosition(w);
-            if (mp.x >= (int)LIST_X && mp.x <= (int)(LIST_X+LIST_W) &&
-                mp.y >= (int)LIST_Y  && mp.y <= (int)(LIST_Y+LIST_H))
+            auto mp = w.mapPixelToCoords(sf::Mouse::getPosition(w));
+            if (mp.x >= LIST_X && mp.x <= LIST_X+LIST_W &&
+                mp.y >= LIST_Y  && mp.y <= LIST_Y+LIST_H)
             {
                 int row = (int)((mp.y - LIST_Y + scrollY) / ROW_H);
                 if (row >= 0 && row < (int)servers.size()) sel = row;
@@ -619,6 +714,7 @@ screenBrowser(sf::RenderWindow& w, const std::string& /*username*/)
 //int main(int argc, char* argv[]){
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow){
     loadFont();
+    if (sodium_init() < 0) return 1;   // libsodium must init before any crypto
 
     // Create the window ONCE at the start
     sf::RenderWindow window(
@@ -628,14 +724,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     window.setFramerateLimit(60);
     window.setMinimumSize(sf::Vector2u((unsigned)MW / 2, (unsigned)MH / 2));
 
-    // Initial Username Screen
-    std::string username = screenUsername(window);
-    if (username.empty() || !window.isOpen()) return 0;
-    if ((int)username.size() > 15) username = username.substr(0, 15);
+    // Initial Login Screen (name + auth mode); retried on failed auth
+    std::string username;
+    std::string loginErrMsg;
 
     while (window.isOpen())
     {
-        // ScreenMainMenu now takes the existing window
+        AuthInfo auth = screenLogin(window, username, loginErrMsg);
+        if (username.empty() || !window.isOpen()) break;
+        loginErrMsg.clear();
+        if ((int)username.size() > 15) username = username.substr(0, 15);
+
         MenuChoice choice = screenMainMenu(window, username);
 
         if (!window.isOpen() || choice == MenuChoice::NONE) break;
@@ -667,8 +766,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
         // Run GameClient using the SAME window
         try {
-            GameClient cli(serverIp, serverPort, username);
+            GameClient cli(serverIp, serverPort, username, auth);
             cli.run(window); // Pass the window reference here
+            if (cli.getAuthFailed()) loginErrMsg = cli.getAuthError();
         }
         catch (const std::exception& ex)
         {
@@ -680,4 +780,5 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         std::this_thread::sleep_for(std::chrono::milliseconds(120));
         // Loop - re-open menu window
     }
+    return 0;
 }

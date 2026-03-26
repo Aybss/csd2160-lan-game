@@ -1,5 +1,6 @@
 #include "Persistence.h"
 #include "Common.h"
+#include <sodium.h>
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -7,7 +8,7 @@
 
 // Minimal hand-rolled JSON (no external lib needed)
 // Format per player:
-// {"name":"x","xp":0,"level":1,"coins":100,"ownedSkins":1,"totalWins":0,"totalKills":0}
+// {"name":"x","xp":0,"level":1,"coins":100,"ownedSkins":1,"totalWins":0,"totalKills":0,"authKey":"","salt":""}
 
 static std::string jsonStr(const std::string& key, const std::string& val)
 { return "\"" + key + "\":\"" + val + "\""; }
@@ -22,7 +23,9 @@ static std::string serialize(const PlayerRecord& r)
            jsonNum("coins",r.coins) + "," +
            jsonNum("ownedSkins",r.ownedSkins) + "," +
            jsonNum("totalWins",r.totalWins) + "," +
-           jsonNum("totalKills",r.totalKills) + "}";
+           jsonNum("totalKills",r.totalKills) + "," +
+           jsonStr("authKey",r.authKey) + "," +
+           jsonStr("salt",r.salt) + "}";
 }
 
 static std::string extractStr(const std::string& json, const std::string& key)
@@ -118,4 +121,46 @@ std::vector<PlayerRecord> Persistence::topByWins(int n) const
     });
     if((int)copy.size()>n) copy.resize(n);
     return copy;
+}
+
+// ---- Crypto helpers ----
+
+std::string Persistence::generateSaltHex()
+{
+    uint8_t salt[crypto_pwhash_SALTBYTES]; // 16 bytes
+    randombytes_buf(salt, sizeof(salt));
+    char hex[crypto_pwhash_SALTBYTES * 2 + 1];
+    sodium_bin2hex(hex, sizeof(hex), salt, sizeof(salt));
+    return std::string(hex);
+}
+
+std::string Persistence::bytesToHex(const uint8_t *data, size_t len)
+{
+    std::string hex(len * 2 + 1, '\0');
+    sodium_bin2hex(&hex[0], hex.size(), data, len);
+    hex.resize(len * 2);
+    return hex;
+}
+
+bool Persistence::hexToBytes(const std::string &hex, uint8_t *out, size_t len)
+{
+    size_t decoded = 0;
+    return sodium_hex2bin(out, len, hex.c_str(), hex.size(),
+                          nullptr, &decoded, nullptr) == 0 &&
+           decoded == len;
+}
+
+bool Persistence::verifyHmac(const std::string &storedAuthKeyHex,
+                             const uint8_t challengeNonce[32],
+                             const uint8_t receivedHmac[32])
+{
+    uint8_t key[32];
+    if (!hexToBytes(storedAuthKeyHex, key, 32))
+        return false;
+
+    uint8_t expected[crypto_auth_hmacsha256_BYTES]; // 32 bytes
+    crypto_auth_hmacsha256(expected, challengeNonce, 32, key);
+
+    // Constant-time comparison to prevent timing attacks
+    return crypto_verify_32(expected, receivedHmac) == 0;
 }

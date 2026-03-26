@@ -120,7 +120,15 @@ enum class PktType : uint8_t
 
     // Admin / bot
     ADD_BOT         = 80,   // host-server: add a bot player
-    KICK_BOT = 81,          
+    KICK_BOT = 81,
+
+    // Auth / Key Exchange
+    KEY_EXCHANGE = 90,     // client->server: ephemeral Curve25519 public key
+    KEY_EXCHANGE_ACK = 91, // server->client: server long-term public key
+    AUTH_CHALLENGE = 92,   // server->client (encrypted): random nonce + salt
+    AUTH_RESPONSE = 93,    // client->server (encrypted): auth data
+    AUTH_RESULT = 94,      // server->client (encrypted): result + assigned pid
+    ENCRYPTED = 95,        // wrapper: [PktType][nonce:24][ciphertext]
 };
 
 
@@ -374,6 +382,63 @@ struct PktServerAnnounce
 struct PktServerQuery
 {
     PktType type = PktType::SERVER_QUERY;
+};
+
+//  Auth mode
+enum class AuthMode : uint8_t
+{
+    ANONYMOUS = 0,
+    LOGIN = 1,
+    REGISTER = 2
+};
+
+//  Key exchange (plaintext — public keys are not secret)
+//  name is sent early so the server can look up the salt before sending the challenge.
+struct PktKeyExchange
+{
+    PktType type = PktType::KEY_EXCHANGE;
+    char name[16]{}; // username announcing itself
+    AuthMode mode = AuthMode::ANONYMOUS;
+    uint8_t clientPk[32]{}; // client ephemeral Curve25519 public key
+};
+struct PktKeyExchangeAck
+{
+    PktType type = PktType::KEY_EXCHANGE_ACK;
+    uint8_t serverPk[32]{}; // server long-term Curve25519 public key
+};
+
+//  Encrypted envelope header
+//  Full wire layout: [PktType::ENCRYPTED (1 byte)] [nonce (24 bytes)] [ciphertext (payload + 16 MAC)]
+struct EncryptedEnvelopeHdr
+{
+    PktType type = PktType::ENCRYPTED;
+    uint8_t nonce[24]{};
+    // ciphertext bytes follow immediately in the packet buffer
+};
+
+//  Auth inner packets (sent encrypted inside EncryptedEnvelope)
+struct PktAuthChallenge
+{
+    PktType type = PktType::AUTH_CHALLENGE;
+    uint8_t challengeNonce[32]{}; // random per-session challenge for HMAC signing
+    char saltHex[33]{};           // LOGIN: stored per-user Argon2id salt (hex); others: empty
+};
+struct PktAuthResponse
+{
+    PktType type = PktType::AUTH_RESPONSE;
+    AuthMode mode = AuthMode::ANONYMOUS;
+    char name[16]{};
+    char saltHex[33]{};     // REGISTER: client-generated salt (hex of 16 bytes); others: unused
+    uint8_t authData[32]{}; // LOGIN:    HMAC-SHA256(Argon2id(pw,salt), challengeNonce)
+                            // REGISTER: raw 32-byte Argon2id(pw, clientSalt) stored as authKey in DB
+                            // ANONYMOUS: all zeros
+};
+struct PktAuthResult
+{
+    PktType type = PktType::AUTH_RESULT;
+    uint8_t result = 0; // 0=ok, 1=bad_credentials, 2=name_taken, 3=game_in_progress, 4=lobby_full
+    uint8_t pid = 0xFF; // assigned pid on success
+    char reason[32]{};
 };
 
 #pragma pack(pop)

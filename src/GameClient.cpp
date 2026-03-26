@@ -1,7 +1,10 @@
 #include "GameClient.h"
 #include "VoiceChat.h"
+#include "Persistence.h"
+#include <sodium.h>
 #include <SFML/Graphics.hpp>
 #include <SFML/Audio.hpp>
+#include <fstream>
 #include <cstring>
 #include <cmath>
 #include <sstream>
@@ -28,8 +31,8 @@ static const std::string SKIN_NAMES[SKIN_COUNT] = {
     "Gold   (200c)"
 };
 
-GameClient::GameClient(const std::string& serverIp, uint16_t port, const std::string& username)
-    : m_username(username)
+GameClient::GameClient(const std::string& serverIp, uint16_t port, const std::string& username, const AuthInfo& auth)
+    : m_username(username), m_auth(auth)
 {
     m_net.init(serverIp, port);
     loadAssets();
@@ -367,8 +370,21 @@ void GameClient::run(sf::RenderWindow& window)
     window.setView(lbView);
 
     sf::Clock clock;
-    PktConnect conn; strncpy(conn.name, m_username.c_str(), 15);
-    m_net.send(&conn, sizeof(conn));
+
+    // Generate ephemeral Curve25519 keypair for this session
+    crypto_kx_keypair(m_clientPk, m_clientSk);
+
+    // Begin key exchange (replaces the old PktConnect send)
+    auto sendKeyExchange = [&]()
+    {
+        PktKeyExchange ke;
+        strncpy(ke.name, m_username.c_str(), 15);
+        ke.mode = m_auth.mode;
+        memcpy(ke.clientPk, m_clientPk, 32);
+        m_net.send(&ke, sizeof(ke));
+    };
+    sendKeyExchange();
+    m_phase = ClientPhase::KEY_EXCHANGE;
 
     bool shouldReturn = false;
     while (window.isOpen() && !shouldReturn)
@@ -505,13 +521,13 @@ void GameClient::run(sf::RenderWindow& window)
         m_voice.setTalking(!m_pauseOpen && sf::Keyboard::isKeyPressed(sf::Keyboard::Key::V));
         m_voice.tick();
 
-        // Retry connect
-        if (m_phase == ClientPhase::CONNECTING)
+        // Retry key exchange if server hasn't responded yet
+        if (m_phase == ClientPhase::KEY_EXCHANGE)
         {
             m_keepaliveTimer += m_dt;
-            if (m_keepaliveTimer > 1.5f) {
-                PktConnect conn2; strncpy(conn2.name, m_username.c_str(), 15);
-                m_net.send(&conn2, sizeof(conn2));
+            if (m_keepaliveTimer > 1.5f)
+            {
+                sendKeyExchange();
                 m_keepaliveTimer = 0.f;
             }
         }
@@ -564,7 +580,11 @@ void GameClient::run(sf::RenderWindow& window)
 
         switch (m_phase)
         {
-        case ClientPhase::CONNECTING:   drawConnecting(window);  break;
+        case ClientPhase::CONNECTING:
+        case ClientPhase::KEY_EXCHANGE:
+        case ClientPhase::AUTHENTICATING:
+            drawConnecting(window);
+            break;
         case ClientPhase::LOBBY:        updateLobby(window); drawLobby(window); break;
         case ClientPhase::SHOP:         updateShop(window);  drawShop(window);  break;
         case ClientPhase::IN_GAME:      if (!m_pauseOpen) sendInput(window); drawInGame(window); break;
@@ -595,19 +615,212 @@ void GameClient::processPackets()
         // Once disconnected, ignore everything that could change phase
         if(m_phase == ClientPhase::DISCONNECTED) continue;
 
-        switch(t)
+        switch (t)
         {
-            case PktType::CONNECT_ACK:
-                if(e.len>=(int)sizeof(PktConnectAck)){
-                    PktConnectAck a; memcpy(&a,e.buf,sizeof(a));
-                    if(!a.denied){ m_pid=a.pid; m_net.m_pid=a.pid; m_net.m_connected=true;
-                        m_phase=ClientPhase::LOBBY;
-                        std::cout<<"[Client] Connected as pid "<<(int)m_pid<<"\n";
+            case PktType::KEY_EXCHANGE_ACK:
+            {
+                // Only process during key exchange phase
+                if (m_phase != ClientPhase::KEY_EXCHANGE)
+                    break;
+                if (e.len < (int)sizeof(PktKeyExchangeAck))
+                    break;
+                PktKeyExchangeAck ack;
+                memcpy(&ack, e.buf, sizeof(ack));
+
+                // Derive session keys (client side)
+                uint8_t rxKey[32], txKey[32]; // rx = incoming from server, tx = outgoing to server
+                if (crypto_kx_client_session_keys(rxKey, txKey,
+                                                m_clientPk, m_clientSk, ack.serverPk) != 0)
+                {
+                    m_authError = "Key exchange failed (invalid server key)";
+                    m_authFailed = true;
+                    m_disconnectMsg = m_authError;
+                    m_phase = ClientPhase::DISCONNECTED;
+                    break;
+                }
+                m_net.setSessionKeys(rxKey, txKey);
+
+                // TOFU: check/store server public key in known_servers.json
+                {
+                    std::string serverPkHex = Persistence::bytesToHex(ack.serverPk, 32);
+                    std::string serverKey = e.from.sin_addr.s_addr
+                                                ? std::to_string(ntohl(e.from.sin_addr.s_addr)) + ":" + std::to_string(ntohs(e.from.sin_port))
+                                                : "local";
+
+                    // Read known servers
+                    std::string stored;
+                    std::ifstream kf("known_servers.json");
+                    std::string line;
+                    bool found = false, mismatch = false;
+                    std::vector<std::string> lines;
+                    while (kf && std::getline(kf, line))
+                    {
+                        lines.push_back(line);
+                        if (line.find("\"key\":\"" + serverKey + "\"") != std::string::npos)
+                        {
+                            found = true;
+                            if (line.find("\"pk\":\"" + serverPkHex + "\"") == std::string::npos)
+                                mismatch = true;
+                        }
+                    }
+                    kf.close();
+
+                    if (mismatch)
+                    {
+                        // Server key changed: potential MitM — warn but continue for LAN usage
+                        std::cout << "[Client] WARNING: Server key changed for " << serverKey
+                                << ". Possible MitM. Update known_servers.json to trust new key.\n";
+                        m_chatHistory.push_back("!!! Server key changed — possible MitM !!!");
+                    }
+                    else if (!found)
+                    {
+                        // First time seeing this server: store (TOFU)
+                        std::ofstream kout("known_servers.json", std::ios::app);
+                        kout << "{\"key\":\"" << serverKey << "\",\"pk\":\"" << serverPkHex << "\"}\n";
+                    }
+                }
+
+                m_phase = ClientPhase::AUTHENTICATING;
+                m_keepaliveTimer = 0.f;
+                break;
+            }
+
+            case PktType::ENCRYPTED:
+            {
+                // Decrypt and dispatch inner auth packet
+                std::vector<uint8_t> dec;
+                if (!m_net.decryptPacket(e, dec) || dec.empty())
+                    break;
+                PktType inner = (PktType)dec[0];
+
+                if (inner == PktType::AUTH_CHALLENGE &&
+                    m_phase == ClientPhase::AUTHENTICATING &&
+                    dec.size() >= sizeof(PktAuthChallenge))
+                {
+                    PktAuthChallenge chal;
+                    memcpy(&chal, dec.data(), sizeof(chal));
+
+                    PktAuthResponse resp;
+                    resp.mode = m_auth.mode;
+                    strncpy(resp.name, m_username.c_str(), 15);
+
+                    if (m_auth.mode == AuthMode::ANONYMOUS)
+                    {
+                        memset(resp.authData, 0, 32);
+                    }
+                    else
+                    {
+                        const char *pw = m_auth.password.c_str();
+                        size_t pwLen = m_auth.password.size();
+
+                        // Determine the salt to use
+                        char saltHex[33]{};
+                        if (m_auth.mode == AuthMode::REGISTER)
+                        {
+                            // Client generates a fresh salt for registration
+                            uint8_t newSalt[crypto_pwhash_SALTBYTES];
+                            randombytes_buf(newSalt, sizeof(newSalt));
+                            sodium_bin2hex(saltHex, 33, newSalt, sizeof(newSalt));
+                        }
+                        else // LOGIN
+                        {
+                            strncpy(saltHex, chal.saltHex, 32);
+                        }
+
+                        // Decode hex salt to binary
+                        uint8_t saltBin[crypto_pwhash_SALTBYTES]{};
+                        size_t decoded = 0;
+                        if (sodium_hex2bin(saltBin, sizeof(saltBin),
+                                        saltHex, strnlen(saltHex, 32),
+                                        nullptr, &decoded, nullptr) != 0 ||
+                            decoded != crypto_pwhash_SALTBYTES)
+                        {
+                            m_authError = "Bad salt from server";
+                            m_authFailed = true;
+                            m_disconnectMsg = m_authError;
+                            m_phase = ClientPhase::DISCONNECTED;
+                            break;
+                        }
+
+                        // Derive 32-byte Argon2id key from password
+                        uint8_t authKey[32];
+                        if (crypto_pwhash(authKey, 32,
+                                        pw, pwLen,
+                                        saltBin,
+                                        crypto_pwhash_OPSLIMIT_INTERACTIVE,
+                                        crypto_pwhash_MEMLIMIT_INTERACTIVE,
+                                        crypto_pwhash_ALG_DEFAULT) != 0)
+                        {
+                            m_authError = "Key derivation failed (out of memory?)";
+                            m_authFailed = true;
+                            m_disconnectMsg = m_authError;
+                            m_phase = ClientPhase::DISCONNECTED;
+                            break;
+                        }
+
+                        if (m_auth.mode == AuthMode::REGISTER)
+                        {
+                            // Send raw key + salt to server for storage
+                            strncpy(resp.saltHex, saltHex, 32);
+                            memcpy(resp.authData, authKey, 32);
+                        }
+                        else // LOGIN
+                        {
+                            // HMAC-SHA256(authKey, challengeNonce) — password never leaves client
+                            crypto_auth_hmacsha256(resp.authData, chal.challengeNonce, 32, authKey);
+                        }
+
+                        // Clear sensitive data from stack
+                        sodium_memzero(authKey, sizeof(authKey));
+                    }
+
+                    m_net.sendEncrypted(&resp, sizeof(resp));
+                }
+                else if (inner == PktType::AUTH_RESULT &&
+                        dec.size() >= sizeof(PktAuthResult))
+                {
+                    PktAuthResult ar;
+                    memcpy(&ar, dec.data(), sizeof(ar));
+
+                    if (ar.result == 0)
+                    {
+                        m_pid = ar.pid;
+                        m_net.m_pid = ar.pid;
+                        m_net.m_connected = true;
+                        m_phase = ClientPhase::LOBBY;
+                        std::cout << "[Client] Auth OK, joined as pid " << (int)m_pid << "\n";
+
                         // Init voice chat now that we know our pid
                         if(!m_voiceInit){
                             m_voice.init(m_pid, [this](const void* d, int l){ m_net.send(d,l); });
                             m_voiceInit = true;
                         }
+                    }
+                    else
+                    {
+                        m_authError = std::string(ar.reason, strnlen(ar.reason, 31));
+                        m_authFailed = true;
+                        m_disconnectMsg = "Auth failed: " + m_authError;
+                        m_phase = ClientPhase::DISCONNECTED;
+                        m_returnToMenu = true;
+                    }
+                }
+                break;
+            }
+
+            case PktType::CONNECT_ACK:
+                // Handle early plaintext rejection (e.g. game in progress during key exchange)
+                if (e.len >= (int)sizeof(PktConnectAck))
+                {
+                    PktConnectAck a;
+                    memcpy(&a, e.buf, sizeof(a));
+                    if (a.denied)
+                    {
+                        m_authError = "Server rejected connection (game in progress / lobby full)";
+                        m_authFailed = true;
+                        m_disconnectMsg = m_authError;
+                        m_phase = ClientPhase::DISCONNECTED;
+                        m_returnToMenu = true;
                     }
                 } break;
 

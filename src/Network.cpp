@@ -2,6 +2,7 @@
 #define NOMINMAX
 #pragma comment(lib,"ws2_32.lib")
 #include "Network.h"
+#include <sodium.h>
 #include <cstring>
 #include <stdexcept>
 #include <iostream>
@@ -249,4 +250,125 @@ std::vector<DiscoveredServer> scanLAN(uint16_t port, int waitMs)
     }
     closesocket(sock);
     return results;
+}
+
+// ---- ServerNet crypto helpers ----
+
+void ServerNet::sendToAddr(const sockaddr_in &addr, const void *data, int len)
+{
+    m_sock.sendTo(data, len, addr);
+}
+
+void ServerNet::setClientKeys(uint8_t pid, const uint8_t rxKey[32], const uint8_t txKey[32])
+{
+    for (auto &c : m_clients)
+    {
+        if (c.active && c.pid == pid)
+        {
+            memcpy(c.sessionRxKey, rxKey, 32);
+            memcpy(c.sessionTxKey, txKey, 32);
+            c.keyExchangeDone = true;
+            c.nonceTx = 0;
+            return;
+        }
+    }
+}
+
+void ServerNet::sendEncrypted(uint8_t pid, const void *plaintext, int len)
+{
+    ClientRecord *cr = nullptr;
+    for (auto &c : m_clients)
+        if (c.active && c.pid == pid)
+        {
+            cr = &c;
+            break;
+        }
+    if (!cr || !cr->keyExchangeDone)
+        return;
+
+    // Build 24-byte nonce from 8-byte little-endian counter (remaining bytes zero)
+    EncryptedEnvelopeHdr hdr;
+    memset(hdr.nonce, 0, 24);
+    memcpy(hdr.nonce, &cr->nonceTx, sizeof(cr->nonceTx));
+    cr->nonceTx++;
+
+    // ciphertext = plaintext + 16-byte MAC (crypto_secretbox_MACBYTES)
+    std::vector<uint8_t> buf(sizeof(hdr) + len + 16);
+    memcpy(buf.data(), &hdr, sizeof(hdr));
+    crypto_secretbox_easy(
+        buf.data() + sizeof(hdr),
+        (const uint8_t *)plaintext, (unsigned long long)len,
+        hdr.nonce,
+        cr->sessionTxKey);
+    m_sock.sendTo(buf.data(), (int)buf.size(), cr->addr);
+}
+
+bool ServerNet::decryptFrom(uint8_t pid, const Envelope &e, std::vector<uint8_t> &out)
+{
+    constexpr int HDR = (int)sizeof(EncryptedEnvelopeHdr);
+    if (e.len <= HDR + 16)
+        return false;
+
+    const ClientRecord *cr = getClient(pid);
+    if (!cr || !cr->keyExchangeDone)
+        return false;
+
+    const uint8_t *nonce = e.buf + 1; // skip PktType byte (1), nonce starts at offset 1
+    const uint8_t *ct = e.buf + HDR;
+    int ctLen = e.len - HDR;
+
+    out.resize((size_t)(ctLen - 16));
+    return crypto_secretbox_open_easy(
+               out.data(),
+               ct, (unsigned long long)ctLen,
+               nonce,
+               cr->sessionRxKey) == 0;
+}
+
+// ---- ClientNet crypto helpers ----
+
+void ClientNet::setSessionKeys(const uint8_t rxKey[32], const uint8_t txKey[32])
+{
+    memcpy(m_sessionRxKey, rxKey, 32);
+    memcpy(m_sessionTxKey, txKey, 32);
+    m_keyExchangeDone = true;
+    m_nonceTx = 0;
+}
+
+void ClientNet::sendEncrypted(const void *plaintext, int len)
+{
+    if (!m_keyExchangeDone)
+        return;
+
+    EncryptedEnvelopeHdr hdr;
+    memset(hdr.nonce, 0, 24);
+    memcpy(hdr.nonce, &m_nonceTx, sizeof(m_nonceTx));
+    m_nonceTx++;
+
+    std::vector<uint8_t> buf(sizeof(hdr) + len + 16);
+    memcpy(buf.data(), &hdr, sizeof(hdr));
+    crypto_secretbox_easy(
+        buf.data() + sizeof(hdr),
+        (const uint8_t *)plaintext, (unsigned long long)len,
+        hdr.nonce,
+        m_sessionTxKey);
+    m_sock.sendTo(buf.data(), (int)buf.size(), m_server);
+}
+
+bool ClientNet::decryptPacket(const Envelope &e, std::vector<uint8_t> &out)
+{
+    constexpr int HDR = (int)sizeof(EncryptedEnvelopeHdr);
+    if (e.len <= HDR + 16 || !m_keyExchangeDone)
+        return false;
+
+    const uint8_t *nonce = e.buf + 1;
+    const uint8_t *ct = e.buf + HDR;
+    int ctLen = e.len - HDR;
+
+    out.resize((size_t)(ctLen - 16));
+    return crypto_secretbox_open_easy(
+               out.data(),
+               ct, (unsigned long long)ctLen,
+               nonce,
+               m_sessionRxKey) == 0;
 }

@@ -32,6 +32,12 @@ struct ClientRecord
     char        name[16]  = {};
     bool        active    = false;
     float       lastSeen  = 0.f;   // seconds since epoch (use clock)
+
+    // Crypto session keys (set after key exchange, used for auth-phase encrypted packets)
+    uint8_t    sessionRxKey[32]{}; // decrypt incoming from this client (server rx = client tx)
+    uint8_t    sessionTxKey[32]{}; // encrypt outgoing to this client  (server tx = client rx)
+    uint64_t   nonceTx = 0;       // monotonic counter for outgoing encrypted packets
+    bool       keyExchangeDone = false;
 };
 
 //  Inbound envelope 
@@ -72,6 +78,16 @@ public:
     const ClientRecord* getClient(uint8_t pid) const;
     std::vector<uint8_t> activePids() const;
 
+    // Direct send by address (used before client is registered / has pid)
+    void sendToAddr(const sockaddr_in &addr, const void *data, int len);
+
+    // Store session keys (called after key exchange completes for a registered client)
+    void setClientKeys(uint8_t pid, const uint8_t rxKey[32], const uint8_t txKey[32]);
+
+    // Encrypted send/receive using stored session keys (for auth phase)
+    void sendEncrypted(uint8_t pid, const void *plaintext, int len);
+    bool decryptFrom(uint8_t pid, const Envelope &e, std::vector<uint8_t> &out);
+
 private:
     UdpSocket                m_sock;
     std::vector<ClientRecord> m_clients;
@@ -93,12 +109,22 @@ public:
 
     bool pollEnvelope(Envelope& out);
 
+    // Encrypted send/receive (post-key-exchange, for auth phase)
+    void sendEncrypted(const void *plaintext, int len);
+    bool decryptPacket(const Envelope &e, std::vector<uint8_t> &out);
+    void setSessionKeys(const uint8_t rxKey[32], const uint8_t txKey[32]);
+
 private:
     UdpSocket   m_sock;
     sockaddr_in m_server{};
     bool        m_connected = false;
     uint8_t     m_pid       = 0xFF;
     std::queue<Envelope> m_queue;
+
+    uint8_t m_sessionRxKey[32]{}; // decrypt incoming from server
+    uint8_t m_sessionTxKey[32]{}; // encrypt outgoing to server
+    uint64_t m_nonceTx = 0;       // monotonic counter for outgoing encrypted packets
+    bool m_keyExchangeDone = false;
 
     friend class GameClient;  // GameClient sets m_connected/m_pid on ack
 };
