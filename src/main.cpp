@@ -271,7 +271,7 @@ static AuthMode screenModeSelect(sf::RenderWindow& w)
             drawRect(w, bX, b3Y, bW, bH, h3 ? sf::Color{60,65,85,255} : sf::Color{18,22,34,255}, PANEL_BRD, 1.5f);
             { auto l = mkT("Play as Guest", 22, h3 ? sf::Color::White : TXT_DIM);
               centerX(l, bX, bW); l.setPosition({l.getPosition().x, b3Y+8.f}); w.draw(l);
-              auto s = mkT("No account needed  \xc2\xb7  stats not saved", 13, TXT_DIM);
+              auto s = mkT("No account needed, stats not saved", 13, TXT_DIM);
               centerX(s, bX, bW); s.setPosition({s.getPosition().x, b3Y+38.f}); w.draw(s); }
         }
         w.display();
