@@ -1,8 +1,5 @@
 {
   "name": "tanknet",
   "version": "1.0",
-  "dependencies": [
-    "sfml",
-    "opus"
-  ]
+  "dependencies": ["sfml", "opus", "libsodium"]
 }

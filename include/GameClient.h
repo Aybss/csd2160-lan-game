@@ -11,18 +11,36 @@
 #include <deque>
 #include <optional>
 
-enum class ClientPhase { CONNECTING, LOBBY, SHOP, IN_GAME, ROUND_OVER, MATCH_OVER, DISCONNECTED };
+enum class ClientPhase { CONNECTING, KEY_EXCHANGE, AUTHENTICATING, LOBBY, SHOP, IN_GAME, ROUND_OVER, MATCH_OVER, DISCONNECTED };
+
+// Authentication info supplied from the menu before connecting
+struct AuthInfo
+{
+    AuthMode    mode = AuthMode::ANONYMOUS;
+    std::string password;
+};
 
 class GameClient
 {
 public:
-    GameClient(const std::string& serverIp, uint16_t port, const std::string& username);
+    GameClient(const std::string& serverIp, uint16_t port,
+               const std::string& username, const AuthInfo& auth);
     void run(sf::RenderWindow& window);
+
+    bool        getAuthFailed() const { return m_authFailed; }
+    std::string getAuthError()  const { return m_authError; }
 
 private:
     ClientNet   m_net;
     std::string m_username;
     uint8_t     m_pid = 0xFF;
+
+    // Auth
+    AuthInfo    m_auth;
+    uint8_t     m_clientPk[32]{};    // ephemeral Curve25519 public key
+    uint8_t     m_clientSk[32]{};    // ephemeral Curve25519 secret key
+    bool        m_authFailed  = false;
+    std::string m_authError;
 
     ClientPhase m_phase = ClientPhase::CONNECTING;
 

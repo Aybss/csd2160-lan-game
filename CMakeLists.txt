@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(SFML 3 COMPONENTS Graphics Window System Audio REQUIRED)
 find_package(Opus CONFIG REQUIRED)
+find_package(unofficial-sodium CONFIG REQUIRED)
 
 set(SOURCES
     src/main.cpp
@@ -30,6 +31,7 @@ target_link_libraries(TankNet PRIVATE
     SFML::System
     SFML::Audio
     Opus::opus
+    unofficial-sodium::sodium
     ws2_32
 )
 

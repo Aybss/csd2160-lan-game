@@ -31,9 +31,28 @@ private:
         bool    ready  = false;
         uint8_t skin   = 0;
         bool    isBot  = false;
+        bool isAnonymous = false; // true = do NOT persist stats at match end
     };
     std::array<LobbyPlayer, MAX_PLAYERS> m_lobby{};
     uint8_t m_hostPid = 0xFF;   // 0xFF = no host yet
+
+    // Server long-term Curve25519 keypair (loaded/generated on startup, stored in server.cfg)
+    uint8_t m_serverPk[32]{};
+    uint8_t m_serverSk[32]{};
+
+    // Pending auth state: clients that have done key exchange but not yet registered
+    struct PendingAuth
+    {
+        sockaddr_in addr{};
+        char name[16]{};
+        AuthMode mode = AuthMode::ANONYMOUS;
+        uint8_t challengeNonce[32]{};
+        uint8_t sessionRxKey[32]{}; // server rx = messages FROM this client
+        uint8_t sessionTxKey[32]{}; // server tx = messages TO this client
+        uint64_t nonceTx = 0;       // for outgoing encrypted-auth packets
+        float timestamp = 0.f;
+    };
+    std::vector<PendingAuth> m_pendingAuth;
 
     //  Bot AI state 
     struct BotState {
@@ -84,6 +103,19 @@ private:
     void handleAddBot(const PktAddBot& p);
     void handleKickBot(const PktKickBot& p);
 
+    // Auth handshake handlers
+    void loadOrGenServerKeypair();
+    void handleKeyExchange(const Envelope &e);
+    void handleAuthResponse(const Envelope &e, PendingAuth pa, const std::vector<uint8_t> &decrypted);
+    void sendEncryptedToPending(PendingAuth &pa, const void *plaintext, int len);
+    bool decryptFromPending(const PendingAuth &pa, const Envelope &e, std::vector<uint8_t> &out);
+
+    // Shared lobby-slot setup used by both handleConnect and handleAuthResponse.
+    // Registers the client with the network layer, fills the lobby slot, and
+    // promotes them to host if the lobby was empty.  Returns 0xFF on failure.
+    uint8_t registerPlayerInLobby(const sockaddr_in &addr, const char *name,
+                                   bool isAnonymous, float nowSec);
+
     void promoteNextHost();          // reassign hostPid after host leaves
     void updateBots(float dt);       // simple AI tick
 
@@ -91,6 +123,7 @@ private:
     bool allReady() const;
     void startGame();
     void announcePresence(const sockaddr_in* replyTo = nullptr);  // UDP broadcast/unicast for LAN discovery
+    void handlePlayerListReq(const sockaddr_in& from);           // respond with registered player records
 
     void updateGame(float dt);
     void checkBulletCollisions();

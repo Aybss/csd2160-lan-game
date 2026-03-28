@@ -1,4 +1,6 @@
 #include "GameServer.h"
+#include <sodium.h>
+#include <fstream>
 #include <iostream>
 #include <cstring>
 #include <cmath>
@@ -20,6 +22,9 @@ static float nowSeconds()
 
 GameServer::GameServer(uint16_t port)
 {
+    if (sodium_init() < 0)
+        std::cerr << "[Server] WARNING: sodium_init() failed\n";
+    loadOrGenServerKeypair();
     m_net.init(port);
     m_db.load();
 }
@@ -50,6 +55,13 @@ void GameServer::run()
             std::cout << "[Server] Player " << (int)pid << " timed out\n";
             handleDisconnect(pid);
         }
+
+        // Expire stale pending auths older than 30 seconds
+        m_pendingAuth.erase(
+            std::remove_if(m_pendingAuth.begin(), m_pendingAuth.end(),
+                           [this](const PendingAuth &pa)
+                           { return (m_now - pa.timestamp) > 30.f; }),
+            m_pendingAuth.end());
 
         // Process packets
         Envelope e;
@@ -93,6 +105,29 @@ void GameServer::handlePacket(const Envelope& e)
     PktType t = (PktType)e.buf[0];
     switch(t)
     {
+        case PktType::KEY_EXCHANGE: handleKeyExchange(e); break;
+        case PktType::ENCRYPTED:
+        {
+            // Find the matching PendingAuth by source address and decrypt
+            for (auto it = m_pendingAuth.begin(); it != m_pendingAuth.end(); ++it)
+            {
+                if (it->addr.sin_addr.s_addr == e.from.sin_addr.s_addr &&
+                    it->addr.sin_port == e.from.sin_port)
+                {
+                    std::vector<uint8_t> dec;
+                    if (decryptFromPending(*it, e, dec) && !dec.empty())
+                    {
+                        if ((PktType)dec[0] == PktType::AUTH_RESPONSE)
+                        {
+                            PendingAuth pa = *it; // copy before potential erase
+                            handleAuthResponse(e, pa, dec);
+                        }
+                    }
+                    break;
+                }
+            }
+            break;
+        }
         case PktType::CONNECT:       handleConnect(e); break;
         case PktType::PLAYER_READY:  if(e.len>=(int)sizeof(PktPlayerReady)){
             PktPlayerReady p; memcpy(&p,e.buf,sizeof(p)); handlePlayerReady(p,p.pid); } break;
@@ -106,7 +141,8 @@ void GameServer::handlePacket(const Envelope& e)
             PktDisconnect p; memcpy(&p,e.buf,sizeof(p)); handleDisconnect(p.pid); } break;
         case PktType::PING:          { PktType pong=PktType::PONG_PKT; m_net.sendTo(e.buf[1],&pong,1); } break;
         case PktType::VOICE_DATA:    handleVoice(e); break;
-        case PktType::SERVER_QUERY:  announcePresence(&e.from); break;
+        case PktType::SERVER_QUERY:      announcePresence(&e.from); break;
+        case PktType::PLAYER_LIST_REQ:   handlePlayerListReq(e.from); break;
         case PktType::ADD_BOT:       if(e.len>=(int)sizeof(PktAddBot)){
             PktAddBot p; memcpy(&p,e.buf,sizeof(p)); handleAddBot(p); } break;
         case PktType::KICK_BOT:
@@ -126,47 +162,316 @@ void GameServer::handleVoice(const Envelope& e)
     m_net.broadcastExcept(senderPid, e.buf, e.len);
 }
 
+// ---- Server keypair (long-term Curve25519, stored in server.cfg) ----
+
+void GameServer::loadOrGenServerKeypair()
+{
+    // Try to read existing keypair from server.cfg (lines: "pk=<hex64>" and "sk=<hex64>")
+    std::ifstream f("server.cfg");
+    std::string pkHex, skHex;
+    if (f.is_open())
+    {
+        std::string line;
+        while (std::getline(f, line))
+        {
+            if (line.substr(0, 3) == "pk=")
+                pkHex = line.substr(3);
+            if (line.substr(0, 3) == "sk=")
+                skHex = line.substr(3);
+        }
+    }
+
+    bool loaded = false;
+    if (pkHex.size() == 64 && skHex.size() == 64)
+    {
+        if (Persistence::hexToBytes(pkHex, m_serverPk, 32) &&
+            Persistence::hexToBytes(skHex, m_serverSk, 32))
+        {
+            loaded = true;
+            std::cout << "[Server] Loaded server keypair from server.cfg\n";
+        }
+    }
+
+    if (!loaded)
+    {
+        // Generate fresh keypair
+        crypto_kx_keypair(m_serverPk, m_serverSk);
+        // Persist to server.cfg (append / create)
+        std::ofstream out("server.cfg", std::ios::app);
+        out << "pk=" << Persistence::bytesToHex(m_serverPk, 32) << "\n";
+        out << "sk=" << Persistence::bytesToHex(m_serverSk, 32) << "\n";
+        std::cout << "[Server] Generated new server keypair and saved to server.cfg\n";
+    }
+}
+
+// ---- Auth helpers ----
+
+void GameServer::sendEncryptedToPending(PendingAuth &pa, const void *plaintext, int len)
+{
+    EncryptedEnvelopeHdr hdr;
+    memset(hdr.nonce, 0, 24);
+    memcpy(hdr.nonce, &pa.nonceTx, sizeof(pa.nonceTx));
+    pa.nonceTx++;
+
+    std::vector<uint8_t> buf(sizeof(hdr) + len + 16);
+    memcpy(buf.data(), &hdr, sizeof(hdr));
+    crypto_secretbox_easy(
+        buf.data() + sizeof(hdr),
+        (const uint8_t *)plaintext, (unsigned long long)len,
+        hdr.nonce,
+        pa.sessionTxKey);
+    m_net.sendToAddr(pa.addr, buf.data(), (int)buf.size());
+}
+
+bool GameServer::decryptFromPending(const PendingAuth &pa, const Envelope &e, std::vector<uint8_t> &out)
+{
+    constexpr int HDR = (int)sizeof(EncryptedEnvelopeHdr);
+    if (e.len <= HDR + 16)
+        return false;
+
+    const uint8_t *nonce = e.buf + 1; // skip PktType byte; EncryptedEnvelopeHdr.nonce starts at offset 1
+    const uint8_t *ct = e.buf + HDR;
+    int ctLen = e.len - HDR;
+
+    out.resize((size_t)(ctLen - 16));
+    return crypto_secretbox_open_easy(
+               out.data(),
+               ct, (unsigned long long)ctLen,
+               nonce,
+               pa.sessionRxKey // server rx = messages FROM the client
+               ) == 0;
+}
+
+// ---- Key exchange handler ----
+
+void GameServer::handleKeyExchange(const Envelope &e)
+{
+    if (e.len < (int)sizeof(PktKeyExchange))
+        return;
+    PktKeyExchange p;
+    memcpy(&p, e.buf, sizeof(p));
+    p.name[15] = '\0';
+
+    // Early rejection: not in lobby or lobby full
+    if (m_phase != ServerPhase::LOBBY || m_net.clientCount() >= MAX_PLAYERS)
+    {
+        // Send plaintext denial that the client can interpret before session is secured
+        PktConnectAck ack;
+        ack.denied = 1;
+        m_net.sendToAddr(e.from, &ack, sizeof(ack));
+        return;
+    }
+
+    // Expire any stale pending auths from the same address (retransmit case)
+    m_pendingAuth.erase(
+        std::remove_if(m_pendingAuth.begin(), m_pendingAuth.end(),
+                       [&](const PendingAuth &x)
+                       {
+                           return x.addr.sin_addr.s_addr == e.from.sin_addr.s_addr && x.addr.sin_port == e.from.sin_port;
+                       }),
+        m_pendingAuth.end());
+
+    // Derive session keys via crypto_kx (server side)
+    uint8_t rxKey[32], txKey[32]; // rx = incoming from client, tx = outgoing to client
+    if (crypto_kx_server_session_keys(rxKey, txKey, m_serverPk, m_serverSk, p.clientPk) != 0)
+    {
+        std::cerr << "[Server] crypto_kx failed for " << p.name << " (invalid client pk?)\n";
+        return;
+    }
+
+    // Retrieve stored salt for LOGIN mode (so we can include it in the challenge)
+    char saltHex[33]{};
+    if (p.mode == AuthMode::LOGIN)
+    {
+        auto *rec = m_db.find(p.name);
+        if (rec && !rec->salt.empty())
+            strncpy(saltHex, rec->salt.c_str(), 32);
+        // If not found, salt stays empty — rejection happens later in handleAuthResponse
+    }
+
+    // Store PendingAuth
+    PendingAuth pa;
+    pa.addr = e.from;
+    strncpy(pa.name, p.name, 15);
+    pa.mode = p.mode;
+    memcpy(pa.sessionRxKey, rxKey, 32);
+    memcpy(pa.sessionTxKey, txKey, 32);
+    pa.nonceTx = 0;
+    pa.timestamp = m_now;
+    randombytes_buf(pa.challengeNonce, 32);
+    m_pendingAuth.push_back(pa);
+
+    // Send PktKeyExchangeAck (plaintext — server public key is not secret)
+    PktKeyExchangeAck ack;
+    memcpy(ack.serverPk, m_serverPk, 32);
+    m_net.sendToAddr(e.from, &ack, sizeof(ack));
+
+    // Send encrypted PktAuthChallenge
+    PktAuthChallenge chal;
+    memcpy(chal.challengeNonce, pa.challengeNonce, 32);
+    strncpy(chal.saltHex, saltHex, 32);
+    sendEncryptedToPending(m_pendingAuth.back(), &chal, sizeof(chal));
+}
+
+// ---- Shared lobby-slot helper ----
+
+uint8_t GameServer::registerPlayerInLobby(const sockaddr_in &addr, const char *name,
+                                           bool isAnonymous, float nowSec)
+{
+    uint8_t pid = m_net.registerClient(addr, name, nowSec);
+    if (pid == 0xFF)
+        return 0xFF;
+
+    m_lobby[pid].active      = true;
+    m_lobby[pid].isAnonymous = isAnonymous;
+    m_lobby[pid].isBot       = false;
+    m_lobby[pid].ready       = false;
+    strncpy(m_lobby[pid].name, name, 15);
+    m_lobby[pid].name[15]    = '\0';
+    if (m_hostPid == 0xFF)
+        m_hostPid = pid;
+
+    return pid;
+}
+
+// ---- Auth response handler ----
+
+void GameServer::handleAuthResponse(const Envelope &e, PendingAuth pa,
+                                    const std::vector<uint8_t> &decrypted)
+{
+    if (decrypted.size() < sizeof(PktAuthResponse))
+        return;
+    PktAuthResponse resp;
+    memcpy(&resp, decrypted.data(), sizeof(resp));
+    resp.name[15] = '\0';
+
+    // Remove this pending auth from the vector now (pa is already a copy)
+    m_pendingAuth.erase(
+        std::remove_if(m_pendingAuth.begin(), m_pendingAuth.end(),
+                       [&pa](const PendingAuth &x)
+                       {
+                           return x.addr.sin_addr.s_addr == pa.addr.sin_addr.s_addr && x.addr.sin_port == pa.addr.sin_port;
+                       }),
+        m_pendingAuth.end());
+
+    // Helper to send encrypted result using the pending auth tx key
+    auto sendResult = [&](uint8_t result, uint8_t pid, const char *reason)
+    {
+        PktAuthResult ar;
+        ar.result = result;
+        ar.pid = pid;
+        strncpy(ar.reason, reason, 31);
+        sendEncryptedToPending(pa, &ar, sizeof(ar));
+    };
+
+    // Re-check lobby state in case something changed during key exchange
+    if (m_phase != ServerPhase::LOBBY)
+    {
+        sendResult(3, 0xFF, "Game in progress");
+        return;
+    }
+
+    if (resp.mode == AuthMode::ANONYMOUS)
+    {
+        // Reject if the chosen name is already active in the lobby
+        for (int i = 0; i < MAX_PLAYERS; i++)
+        {
+            if (m_lobby[i].active && strncmp(m_lobby[i].name, resp.name, 15) == 0)
+            {
+                sendResult(5, 0xFF, "Name already in use. Choose another.");
+                return;
+            }
+        }
+        uint8_t pid = registerPlayerInLobby(e.from, resp.name, true, m_now);
+        if (pid == 0xFF) { sendResult(4, 0xFF, "Lobby full"); return; }
+
+        m_net.setClientKeys(pid, pa.sessionRxKey, pa.sessionTxKey);
+        sendResult(0, pid, "");
+        // No profile for anonymous — skip sendProfileUpdate
+        broadcastLobbyState();
+        std::cout << "[Lobby] " << resp.name << " joined anonymously as pid " << (int)pid << "\n";
+    }
+    else if (resp.mode == AuthMode::REGISTER)
+    {
+        auto *existing = m_db.find(resp.name);
+        if (existing && !existing->authKey.empty())
+        {
+            sendResult(2, 0xFF, "Name already registered");
+            return;
+        }
+
+        // Store auth key and salt before registering so the record exists
+        PlayerRecord &r = m_db.getOrCreate(resp.name);
+        r.authKey = Persistence::bytesToHex(resp.authData, 32);
+        r.salt    = std::string(resp.saltHex, strnlen(resp.saltHex, 32));
+        m_db.save();
+
+        uint8_t pid = registerPlayerInLobby(e.from, resp.name, false, m_now);
+        if (pid == 0xFF) { sendResult(4, 0xFF, "Lobby full"); return; }
+
+        m_net.setClientKeys(pid, pa.sessionRxKey, pa.sessionTxKey);
+        sendResult(0, pid, "");
+        sendProfileUpdate(pid);
+        broadcastLobbyState();
+        std::cout << "[Lobby] " << resp.name << " registered and joined as pid " << (int)pid << "\n";
+    }
+    else // AuthMode::LOGIN
+    {
+        auto *rec = m_db.find(resp.name);
+        if (!rec || rec->authKey.empty())
+        {
+            sendResult(1, 0xFF, "Not registered. Use Register.");
+            return;
+        }
+
+        // Verify: HMAC-SHA256(stored_authKey, challengeNonce) must equal resp.authData
+        if (!Persistence::verifyHmac(rec->authKey, pa.challengeNonce, resp.authData))
+        {
+            sendResult(1, 0xFF, "Incorrect password");
+            return;
+        }
+
+        uint8_t pid = registerPlayerInLobby(e.from, resp.name, false, m_now);
+        if (pid == 0xFF) { sendResult(4, 0xFF, "Lobby full"); return; }
+
+        m_net.setClientKeys(pid, pa.sessionRxKey, pa.sessionTxKey);
+        sendResult(0, pid, "");
+        sendProfileUpdate(pid);
+        broadcastLobbyState();
+        std::cout << "[Lobby] " << resp.name << " authenticated and joined as pid " << (int)pid << "\n";
+    }
+}
+
 void GameServer::handleConnect(const Envelope& e)
 {
-    if(e.len < (int)sizeof(PktConnect)) return;
-    PktConnect p; memcpy(&p,e.buf,sizeof(p));
-    p.name[15]='\0';
+    if (e.len < (int)sizeof(PktConnect))
+        return;
 
-    if(m_phase != ServerPhase::LOBBY)
+    PktConnect p;
+    memcpy(&p, e.buf, sizeof(p));
+    p.name[15] = '\0';
+
+    PktConnectAck ack;
+    if (m_phase != ServerPhase::LOBBY)
     {
-        PktConnectAck ack; ack.denied=1;
-        m_net.broadcast(&ack,sizeof(ack));
+        ack.denied = 1;
+        m_net.sendToAddr(e.from, &ack, sizeof(ack));
         return;
     }
 
-    uint8_t pid = m_net.registerClient(e.from, p.name, m_now);
-    if(pid==0xFF)
+    uint8_t pid = registerPlayerInLobby(e.from, p.name, /*isAnonymous=*/true, m_now);
+    if (pid == 0xFF)
     {
-        PktConnectAck ack; ack.denied=1;
-        m_net.sendTo(pid,&ack,sizeof(ack));
+        ack.denied = 1;
+        m_net.sendToAddr(e.from, &ack, sizeof(ack));
         return;
     }
 
-    // Init lobby slot
-    m_lobby[pid].active=true;
-    strncpy(m_lobby[pid].name, p.name, 15);
-    m_lobby[pid].ready=false;
-    m_lobby[pid].isBot=false;
-
-    // First player to connect becomes host/admin
-    if(m_hostPid==0xFF) m_hostPid=pid;
-
-    // Load/create profile
-    auto& rec = m_db.getOrCreate(p.name);
-
-    PktConnectAck ack; ack.pid=pid; ack.denied=0;
-    m_net.sendTo(pid,&ack,sizeof(ack));
-
-    // Send profile
-    sendProfileUpdate(pid);
-
+    ack.pid    = pid;
+    ack.denied = 0;
+    m_net.sendTo(pid, &ack, sizeof(ack));
     broadcastLobbyState();
-    std::cout<<"[Lobby] "<<p.name<<" joined as pid "<<(int)pid<<"\n";
+    std::cout << "[Lobby] " << p.name << " connected (legacy CONNECT) as pid " << (int)pid << "\n";
 }
 
 void GameServer::handlePlayerReady(const PktPlayerReady& p, uint8_t /*pid*/)
@@ -245,7 +550,8 @@ void GameServer::broadcastLobbyState()
         ls.slots[i].ready  = m_lobby[i].ready;
         ls.slots[i].skin   = m_lobby[i].skin;
         ls.slots[i].isBot  = m_lobby[i].isBot ? 1 : 0;
-        if(m_lobby[i].active && !m_lobby[i].isBot){
+        ls.slots[i].isAnonymous = m_lobby[i].isAnonymous ? 1 : 0;
+        if(m_lobby[i].active && !m_lobby[i].isBot && !m_lobby[i].isAnonymous){
             auto& r = m_db.getOrCreate(m_lobby[i].name);
             ls.slots[i].level = r.level;
             ls.slots[i].wins  = r.totalWins;
@@ -543,10 +849,16 @@ void GameServer::endMatch(uint8_t winner)
 {
     m_phase = ServerPhase::MATCH_OVER;
 
-    // Award XP/coins
-    for(int i=0;i<MAX_PLAYERS;i++)
+    // Award XP/coins — skip anonymous players (their stats are not persisted)
+    for (int i = 0; i < MAX_PLAYERS; i++)
     {
-        if(!m_lobby[i].active) continue;
+        if (!m_lobby[i].active)
+            continue;
+        if (m_lobby[i].isAnonymous)
+        {
+            sendProfileUpdate((uint8_t)i);
+            continue;
+        }
         const char* nm = m_lobby[i].name;
         int kills = m_tanks[i].kills();
         uint32_t xp    = kills*XP_PER_KILL + (i==winner ? XP_PER_WIN : 0);
@@ -708,6 +1020,30 @@ void GameServer::sendProfileUpdate(uint8_t pid)
     pu.xp=r.xp; pu.level=r.level; pu.coins=r.coins;
     pu.ownedSkins=r.ownedSkins; pu.totalWins=r.totalWins;
     m_net.sendTo(pid,&pu,sizeof(pu));
+}
+
+void GameServer::handlePlayerListReq(const sockaddr_in& from)
+{
+    const auto& all = m_db.all();
+    size_t total = all.size();
+    size_t sent  = 0;
+    while (sent < total || total == 0)
+    {
+        PktPlayerListResp pkt;
+        pkt.count = 0;
+        for (int i = 0; i < 8 && sent < total; i++, sent++)
+        {
+            const auto& r = all[sent];
+            if (r.authKey.empty()) { continue; } // skip unregistered
+            auto& e = pkt.entries[pkt.count++];
+            strncpy(e.name,       r.name.c_str(),       15); e.name[15]      = '\0';
+            strncpy(e.authKeyHex, r.authKey.c_str(),    64); e.authKeyHex[64]= '\0';
+            strncpy(e.saltHex,    r.salt.c_str(),       32); e.saltHex[32]   = '\0';
+        }
+        pkt.isLast = (sent >= total) ? 1 : 0;
+        m_net.sendToAddr(from, &pkt, sizeof(pkt));
+        if (total == 0) break; // nothing to send
+    }
 }
 
 void GameServer::announcePresence(const sockaddr_in* replyTo)
