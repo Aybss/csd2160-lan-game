@@ -360,7 +360,7 @@ static sf::View makeLetterboxView(unsigned winW, unsigned winH)
 
 void GameClient::run(sf::RenderWindow& window)
 {
-    window.setTitle("TankArena - " + m_username);
+    window.setTitle("TankNet - " + m_username);
     auto sz = window.getSize();
     sf::View lbView = makeLetterboxView(sz.x, sz.y);
     m_lbView = lbView;

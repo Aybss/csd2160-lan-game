@@ -1,4 +1,4 @@
-// main.cpp  -  GUI launcher for TankArena  (SFML 3 API)
+// main.cpp  -  GUI launcher for TankNet (SFML 3 API)
 // Flow:
 //   [Username screen] -> [Create Game | Join Game]
 //   Create Game: detach GameServer thread on localhost, then run GameClient
@@ -175,7 +175,7 @@ static void drawTitleBar(sf::RenderWindow& w, float y = 38.f)
 {
     if (!g_fontLoaded) return;
     auto t1 = mkT("TANK",  66, ACCENT);  t1.setStyle(sf::Text::Bold);
-    auto t2 = mkT("ARENA", 66, ACCENT2); t2.setStyle(sf::Text::Bold);
+    auto t2 = mkT("NET", 66, ACCENT2); t2.setStyle(sf::Text::Bold);
     auto b1 = t1.getLocalBounds(), b2 = t2.getLocalBounds();
     float tw = b1.size.x + 12.f + b2.size.x;
     float tx = (MW - tw) * 0.5f;
@@ -623,7 +623,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // Create the window ONCE at the start
     sf::RenderWindow window(
         sf::VideoMode({ (unsigned)MW, (unsigned)MH }),
-        "TankArena",
+        "TankNet",
         sf::Style::Default);          // Default = Titlebar | Resize | Close
     window.setFramerateLimit(60);
     window.setMinimumSize(sf::Vector2u((unsigned)MW / 2, (unsigned)MH / 2));
